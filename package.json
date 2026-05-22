@@ -1,0 +1,75 @@
+{
+  "name": "companion-timeline",
+  "version": "1.0.0",
+  "description": "NLE-style timeline editor for Bitfocus Companion button actions",
+  "main": "main.cjs",
+  "scripts": {
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "dev": "concurrently \"vite\" \"env -u ELECTRON_RUN_AS_NODE NODE_ENV=development node .electron-runner/node_modules/electron/cli.js main.cjs\"",
+    "prebuild": "node scripts/bump-build.cjs",
+    "build": "vite build",
+    "start": "env -u ELECTRON_RUN_AS_NODE node .electron-runner/node_modules/electron/cli.js main.cjs",
+    "package": "vite build && electron-builder --mac",
+    "package:win": "vite build && electron-builder --win",
+    "release:patch": "npm version patch && npm run package",
+    "release:minor": "npm version minor && npm run package",
+    "release:major": "npm version major && npm run package"
+  },
+  "build": {
+    "appId": "co.atov.companion-timeline",
+    "productName": "Companion Timeline",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "files": [
+      "dist/**",
+      "main.cjs",
+      "preload.cjs",
+      "package.json",
+      "node_modules/better-sqlite3/**",
+      "node_modules/ws/**"
+    ],
+    "directories": {
+      "output": "release"
+    }
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^8.2.2",
+    "electron": "^31.7.7",
+    "electron-builder": "^26.8.1",
+    "playwright-core": "^1.60.0",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.1"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "socket.io-client": "^4.8.3",
+    "ws": "^8.20.1"
+  }
+}
