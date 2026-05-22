@@ -1,6 +1,6 @@
 {
   "name": "companion-timeline",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "NLE-style timeline editor for Bitfocus Companion button actions",
   "author": {
     "name": "Phil Hadfield",
