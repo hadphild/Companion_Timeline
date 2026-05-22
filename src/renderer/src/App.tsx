@@ -65,8 +65,18 @@ export default function App() {
   // Load settings on startup — do NOT auto-connect, show connection screen instead
   useEffect(() => {
     window.api.getSettings().then((s: any) => {
-      const h = s?.companionHost || '127.0.0.1'
-      const p = s?.companionPort || 8000
+      const rawHost = s?.companionHost || '127.0.0.1'
+      // Strip any port embedded in the host string from old settings format
+      const lastColon = rawHost.lastIndexOf(':')
+      let h = rawHost
+      let p = s?.companionPort || 8000
+      if (lastColon > 0) {
+        const maybePort = parseInt(rawHost.slice(lastColon + 1), 10)
+        if (!isNaN(maybePort) && maybePort > 0 && maybePort < 65536) {
+          h = rawHost.slice(0, lastColon)
+          if (!s?.companionPort) p = maybePort
+        }
+      }
       setCompanionHost(h)
       setCompanionPort(p)
       setHostDraft(p === 8000 ? h : `${h}:${p}`)
