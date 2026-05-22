@@ -31,6 +31,7 @@ export interface Step {
 export interface ButtonStyle {
   text?: string
   size?: string | number
+  image?: string | null  // data URI extracted from Companion v5 image layer
   png?: string | null
   alignment?: string
   pngalignment?: string

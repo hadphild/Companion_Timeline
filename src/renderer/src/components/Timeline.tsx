@@ -16,7 +16,10 @@ interface Props {
   onActionSelect: (actionId: string | null, triggerKey: TriggerKey, stepKey: string) => void
   onActionMove: (stepKey: string, triggerKey: TriggerKey, actionId: string, newDelay: number) => void
   onActionAdd: (stepKey: string, triggerKey: TriggerKey, delay: number) => void
+  onActionDrop: (stepKey: string, triggerKey: TriggerKey, delay: number, template: { connectionId: string; definitionId: string; options: Record<string, unknown> }) => void
   onActionDelete: (stepKey: string, triggerKey: TriggerKey, actionId: string) => void
+  playheadMs: number
+  onPlayheadChange: (ms: number) => void
   onStepAdd: () => void
   onStepRemove: (stepKey: string) => void
   onTriggerAdd: (stepKey: string, holdMs: number) => void
@@ -95,7 +98,10 @@ export default function Timeline({
   onActionSelect,
   onActionMove,
   onActionAdd,
+  onActionDrop,
   onActionDelete,
+  playheadMs,
+  onPlayheadChange,
   onStepAdd,
   onStepRemove,
   onTriggerAdd,
@@ -246,6 +252,61 @@ export default function Timeline({
     [pxToMs, snapMs, onActionAdd, currentStepKey]
   )
 
+  const [dropTarget, setDropTarget] = useState<{ triggerKey: TriggerKey; x: number } | null>(null)
+
+  const handleDragOver = useCallback((e: React.DragEvent, triggerKey: TriggerKey) => {
+    if (!e.dataTransfer.types.includes('application/companion-action')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    setDropTarget({ triggerKey, x: e.clientX - rect.left })
+  }, [])
+
+  const handleDragLeave = useCallback(() => setDropTarget(null), [])
+
+  const handlePlayheadDragStart = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const trackArea = trackAreaRef.current
+    if (!trackArea) return
+    const w = trackArea.clientWidth - LABEL_WIDTH
+    const rulerRect = trackArea.querySelector('.ruler-ticks')?.getBoundingClientRect()
+    if (!rulerRect) return
+
+    const onMove = (ev: MouseEvent) => {
+      const x = ev.clientX - rulerRect.left
+      onPlayheadChange(Math.max(0, snapToGrid(pxToMs(x, w), snapMs)))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [pxToMs, snapMs, onPlayheadChange])
+
+  const handleRulerClick = useCallback((e: React.MouseEvent) => {
+    // Only set playhead on direct click, not when ending a drag
+    const trackArea = trackAreaRef.current
+    if (!trackArea) return
+    const w = trackArea.clientWidth - LABEL_WIDTH
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const x = e.clientX - rect.left
+    onPlayheadChange(Math.max(0, snapToGrid(pxToMs(x, w), snapMs)))
+  }, [pxToMs, snapMs, onPlayheadChange])
+
+  const handleDrop = useCallback((e: React.DragEvent, triggerKey: TriggerKey) => {
+    setDropTarget(null)
+    const raw = e.dataTransfer.getData('application/companion-action')
+    if (!raw) return
+    e.preventDefault()
+    const template = JSON.parse(raw)
+    const w = (trackAreaRef.current?.clientWidth ?? 900) - LABEL_WIDTH
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const ms = Math.max(0, snapToGrid(pxToMs(e.clientX - rect.left, w), snapMs))
+    onActionDrop(currentStepKey, triggerKey, ms, template)
+  }, [pxToMs, snapMs, onActionDrop, currentStepKey])
+
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
     if (e.metaKey || e.ctrlKey) {
@@ -352,13 +413,31 @@ export default function Timeline({
 
       {/* Timeline tracks */}
       <div className="timeline" onWheel={handleWheel} ref={trackAreaRef}>
-        {/* Ruler */}
+        {/* Ruler — click to set playhead */}
         <div className="timeline-ruler" style={{ height: RULER_HEIGHT }}>
           <div className="ruler-track-label" style={{ width: LABEL_WIDTH }} />
-          <div className="ruler-ticks" style={{ position: 'relative', flex: 1 }}>
+          <div className="ruler-ticks" style={{ position: 'relative', flex: 1 }} onClick={handleRulerClick}>
             {renderRuler()}
+            {/* Playhead marker — drag to scrub */}
+            {msToPx(playheadMs, containerWidth) >= 0 && (
+              <div
+                className="playhead-ruler-marker"
+                style={{ left: msToPx(playheadMs, containerWidth) }}
+                onMouseDown={handlePlayheadDragStart}
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="playhead-ruler-label">{msToLabel(playheadMs)}</div>
+                <div className="playhead-ruler-arrow" />
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Full-height playhead line inside the timeline tracks area */}
+        <div
+          className="playhead-line"
+          style={{ left: msToPx(playheadMs, containerWidth) + LABEL_WIDTH }}
+        />
 
         {tracks.map(({ triggerKey, actions }) => {
           const isHoldTrack = !['down','up','rotate_left','rotate_right'].includes(triggerKey)
@@ -421,7 +500,15 @@ export default function Timeline({
                 className="track-body"
                 style={{ position: 'relative', flex: 1, height: '100%' }}
                 onDoubleClick={e => handleTrackDoubleClick(e, triggerKey)}
+                onDragOver={e => handleDragOver(e, triggerKey)}
+                onDragLeave={handleDragLeave}
+                onDrop={e => handleDrop(e, triggerKey)}
               >
+                {/* Drop position indicator */}
+                {dropTarget?.triggerKey === triggerKey && (
+                  <div className="drop-indicator" style={{ left: dropTarget.x }} />
+                )}
+
                 {/* Grid lines */}
                 {Array.from({ length: Math.ceil(visibleMs / snapMs) + 1 }, (_, i) => {
                   const t = Math.floor(scrollMs / snapMs) * snapMs + i * snapMs

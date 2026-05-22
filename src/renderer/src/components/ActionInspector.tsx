@@ -234,9 +234,6 @@ export default function ActionInspector({
         <div className="inspector-section-title-row">
           <span className="inspector-section-title">Options</span>
         </div>
-        {Object.keys(action.options).length === 0 && !newOptKey && (
-          <div className="inspector-hint">No options set</div>
-        )}
         {Object.entries(action.options).map(([key, val]) => (
           <div key={key} className="inspector-row inspector-option-row">
             <div className="inspector-option-key">

@@ -3,6 +3,7 @@ import ButtonGrid from './components/ButtonGrid'
 import Timeline from './components/Timeline'
 import ActionInspector from './components/ActionInspector'
 import AddActionModal from './components/AddActionModal'
+import LibraryPanel from './components/LibraryPanel'
 import type { ActionTemplate } from './components/AddActionModal'
 import {
   CompanionConfig,
@@ -30,6 +31,12 @@ export default function App() {
     stepKey: string
   } | null>(null)
   const [dirty, setDirty] = useState(false)
+  const [showLibrary, setShowLibrary] = useState(true)
+  const [playheadMs, setPlayheadMs] = useState(0)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [isPaused, setIsPaused] = useState(false)
+  const animFrameRef = useRef<number | null>(null)
+  const playStartRef = useRef<{ wallTime: number; startMs: number } | null>(null)
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
   const [addingAction, setAddingAction] = useState<{
     stepKey: string; triggerKey: TriggerKey; delay: number
@@ -344,6 +351,37 @@ export default function App() {
     [selectedButtonKey, updateButton, selectedAction]
   )
 
+  const handleActionDrop = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, delay: number, template: { connectionId: string; definitionId: string; options: Record<string, unknown> }) => {
+      if (!selectedButtonKey) return
+      const newAction: CompanionAction = {
+        id: generateId(),
+        instance: template.connectionId,
+        action: template.definitionId,
+        delay,
+        options: (template.options as Record<string, unknown>) ?? {}
+      }
+      updateButton(selectedButtonKey, (ctrl) => {
+        const s = ctrl.steps[stepKey]
+        return {
+          ...ctrl,
+          steps: {
+            ...ctrl.steps,
+            [stepKey]: {
+              ...s,
+              action_sets: {
+                ...s.action_sets,
+                [triggerKey]: [...(s.action_sets[triggerKey] ?? []), newAction]
+              }
+            }
+          }
+        }
+      })
+      setSelectedAction({ id: newAction.id, triggerKey: triggerKey as TriggerKey, stepKey })
+    },
+    [selectedButtonKey, updateButton]
+  )
+
   const handleActionChange = useCallback(
     (updated: CompanionAction) => {
       if (!selectedButtonKey || !selectedAction) return
@@ -459,6 +497,84 @@ export default function App() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [])
+
+  const stopAnimation = useCallback(() => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
+    playStartRef.current = null
+  }, [])
+
+  const handlePause = useCallback(() => {
+    stopAnimation()
+    setIsPlaying(false)
+    setIsPaused(true)
+  }, [stopAnimation])
+
+  const handleStop = useCallback(() => {
+    stopAnimation()
+    setIsPlaying(false)
+    setIsPaused(false)
+    setPlayheadMs(0)
+  }, [stopAnimation])
+
+  const startPlayFrom = useCallback((startMs: number, selectedControl: ButtonControl | null, selectedButtonKey: string | null) => {
+    if (!selectedControl) return
+    const allDelays = Object.values(selectedControl.steps).flatMap(s =>
+      Object.values(s.action_sets).flatMap(acts => (acts ?? []).map(a => a.delay))
+    )
+    const maxMs = Math.max(0, ...allDelays) + 300
+    if (startMs >= maxMs) { setPlayheadMs(0); return }
+
+    setIsPlaying(true)
+    setIsPaused(false)
+    playStartRef.current = { wallTime: performance.now(), startMs }
+
+    if (satellite.isConnected && selectedButtonKey) {
+      satellite.pressButton(selectedButtonKey, true)
+      setTimeout(() => satellite.pressButton(selectedButtonKey, false), 50)
+    }
+
+    const tick = () => {
+      const ref = playStartRef.current
+      if (!ref) return
+      const elapsed = performance.now() - ref.wallTime
+      const currentMs = ref.startMs + elapsed
+      setPlayheadMs(currentMs)
+      if (currentMs < maxMs) {
+        animFrameRef.current = requestAnimationFrame(tick)
+      } else {
+        setPlayheadMs(maxMs)
+        setIsPlaying(false)
+        setIsPaused(false)
+        playStartRef.current = null
+      }
+    }
+    animFrameRef.current = requestAnimationFrame(tick)
+  }, [satellite])
+
+  const handlePlay = useCallback(() => {
+    if (!selectedButtonKey || !selectedControl) return
+    if (isPlaying) { handlePause(); return }
+    // Resume from current position (whether paused or freshly started)
+    startPlayFrom(isPaused ? playheadMs : playheadMs, selectedControl, selectedButtonKey)
+  }, [selectedButtonKey, selectedControl, isPlaying, isPaused, playheadMs, startPlayFrom, handlePause])
+
+  // Arrow key scrubbing when not playing
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (isPlaying) return
+      if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return
+      // Don't steal arrow keys from inputs
+      if ((e.target as HTMLElement).tagName === 'INPUT') return
+      e.preventDefault()
+      const step = e.shiftKey ? 500 : e.ctrlKey || e.metaKey ? 100 : 50
+      setPlayheadMs(ms => Math.max(0, ms + (e.key === 'ArrowRight' ? step : -step)))
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [isPlaying])
+
+  // Stop playback if button changes
+  useEffect(() => { stopAnimation(); setIsPlaying(false); setIsPaused(false) }, [selectedButtonKey]) // eslint-disable-line
 
   const instances = config?.instances ?? {}
 
@@ -631,22 +747,40 @@ export default function App() {
           <span className="app-version" title={`Built ${__BUILD_DATE__}`}>v{__APP_VERSION__} · build {__BUILD_NUMBER__}</span>
         </div>
         <div className="titlebar-actions">
-          {selectedButtonKey && satellite.isConnected && (
-            <button
-              className="toolbar-btn toolbar-btn--test"
-              onMouseDown={() => satellite.pressButton(selectedButtonKey, true)}
-              onMouseUp={() => satellite.pressButton(selectedButtonKey, false)}
-              onMouseLeave={() => satellite.pressButton(selectedButtonKey, false)}
-              title="Hold to test this button in Companion"
-            >
-              ▶ Test
-            </button>
-          )}
+          <button
+            className="toolbar-btn"
+            onClick={handleStop}
+            disabled={!isPlaying && !isPaused}
+            title="Stop and reset to start"
+          >■</button>
+          <button
+            className={`toolbar-btn ${isPlaying ? 'toolbar-btn--playing' : isPaused ? 'toolbar-btn--active' : ''}`}
+            onClick={handlePlay}
+            disabled={!selectedButtonKey || !selectedControl}
+            title={isPlaying ? 'Pause' : isPaused ? 'Resume' : 'Play from playhead · Arrow keys to nudge · Shift+Arrow = 500ms · Cmd+Arrow = 100ms'}
+          >
+            {isPlaying ? '⏸' : '▶'}
+          </button>
+          <button
+            className="toolbar-btn toolbar-btn--test"
+            onMouseDown={() => selectedButtonKey && satellite.isConnected && satellite.pressButton(selectedButtonKey, true)}
+            onMouseUp={() => selectedButtonKey && satellite.isConnected && satellite.pressButton(selectedButtonKey, false)}
+            onMouseLeave={() => selectedButtonKey && satellite.isConnected && satellite.pressButton(selectedButtonKey, false)}
+            disabled={!selectedButtonKey || !satellite.isConnected}
+            title={satellite.isConnected ? 'Hold to test this button in Companion' : 'Not connected to Companion'}
+          >
+            ▶ Test
+          </button>
           {!isLiveDb && !satellite.isConnected && (
             <button className="toolbar-btn toolbar-btn--companion" onClick={handleLoadFromCompanion}>
               Load from Companion
             </button>
           )}
+          <button
+            className={`toolbar-btn ${showLibrary ? 'toolbar-btn--active' : ''}`}
+            onClick={() => setShowLibrary(v => !v)}
+            title="Toggle action library"
+          >⊞ Library</button>
           <button className="toolbar-btn" onClick={handleOpen}>Open File…</button>
           {!isLiveDb && (
             <button className="toolbar-btn" onClick={handleSave} disabled={!config}>Save</button>
@@ -681,9 +815,14 @@ export default function App() {
                 if (key === selectedButtonKey) return
                 setSelectedButtonKey(key)
                 setSelectedAction(null)
+                setPlayheadMs(0)
               }}
             />
           </div>
+
+          {showLibrary && (
+            <LibraryPanel />
+          )}
 
           <div className="main-panel">
             {selectedControl ? (
@@ -697,9 +836,12 @@ export default function App() {
                   control={selectedControl}
                   instances={instances}
                   selectedActionId={selectedAction?.id ?? null}
+                  playheadMs={playheadMs}
+                  onPlayheadChange={setPlayheadMs}
                   onActionSelect={handleActionSelect}
                   onActionMove={handleActionMove}
                   onActionAdd={handleActionAdd}
+                  onActionDrop={handleActionDrop}
                   onActionDelete={handleActionDelete}
                   onStepAdd={handleStepAdd}
                   onStepRemove={handleStepRemove}

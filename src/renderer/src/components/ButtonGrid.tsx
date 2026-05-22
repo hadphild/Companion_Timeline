@@ -66,26 +66,36 @@ export default function ButtonGrid({ config, selectedKey, buttonStates, onSelect
                   Object.values(step.action_sets).some((acts) => acts && acts.length > 0)
                 )
 
+                const bitmapSrc = live?.bitmap
+                  ? `data:image/png;base64,${live.bitmap}`
+                  : ctrl.style.image ?? null
+
                 return (
                   <button
                     key={slot}
                     className={`btn-cell ${selectedKey === key ? 'btn-cell--selected' : ''} ${hasActions ? 'btn-cell--has-actions' : ''} ${live?.pressed ? 'btn-cell--pressed' : ''}`}
-                    style={live?.bitmap ? {} : { backgroundColor: bg, color: fg }}
+                    style={{ backgroundColor: bg }}
                     onClick={() => onSelect(key)}
                     title={ctrl.style.text || `Slot ${slot}`}
                   >
-                    {live?.bitmap ? (
-                      // Live rendered bitmap from Companion
-                      <img
-                        className="btn-bitmap"
-                        src={`data:image/png;base64,${live.bitmap}`}
-                        alt={ctrl.style.text || ''}
-                        draggable={false}
-                      />
+                    {bitmapSrc ? (
+                      <div className="btn-image-wrap">
+                        <img
+                          className="btn-bitmap"
+                          src={bitmapSrc}
+                          alt={ctrl.style.text || ''}
+                          draggable={false}
+                        />
+                        {ctrl.style.text && (
+                          <span className="btn-text btn-text--overlay" style={{ color: fg }}>
+                            {ctrl.style.text}
+                          </span>
+                        )}
+                      </div>
                     ) : (
-                      <span className="btn-text">{ctrl.style.text || ''}</span>
+                      <span className="btn-text" style={{ color: fg }}>{ctrl.style.text || ''}</span>
                     )}
-                    {hasActions && !live?.bitmap && <span className="btn-dot" />}
+                    {hasActions && <span className="btn-dot" />}
                   </button>
                 )
               })}

@@ -6,3 +6,4 @@ release/
 *.sqlite-bak
 *.bak
 .DS_Store
+out/

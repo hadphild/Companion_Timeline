@@ -177,11 +177,13 @@ function readV5Database() {
           if (ctrl.type === 'button-layered' || ctrl.type === 'button') {
             // Extract label text from layers
             const layers = ctrl.style?.layers || []
-            const textLayer = layers.find(l => l.type === 'text')
-            const bgLayer   = layers.find(l => l.type === 'box')
-            const text = textLayer?.text?.value || ''
-            const bgcolor = bgLayer?.color?.value ?? 0
+            const textLayer  = layers.find(l => l.type === 'text')
+            const bgLayer    = layers.find(l => l.type === 'box')
+            const imageLayer = layers.find(l => l.type === 'image' && l.base64Image?.value)
+            const text   = textLayer?.text?.value   || ''
+            const bgcolor = bgLayer?.color?.value   ?? 0
             const color   = textLayer?.color?.value ?? 0xffffff
+            const image   = imageLayer?.base64Image?.value || null
 
             // Normalise steps: v5 actions use connectionId/definitionId, map to instance/action
             const steps = {}
@@ -207,7 +209,7 @@ function readV5Database() {
 
             controls[syntheticKey] = {
               type: 'button',
-              style: { text, color, bgcolor, size: 'auto' },
+              style: { text, color, bgcolor, image, size: 'auto' },
               options: { relativeDelay: false, stepAutoProgress: true },
               feedbacks: ctrl.feedbacks || [],
               steps,
@@ -486,26 +488,38 @@ app.whenReady().then(() => {
       const mainJs = path.join(moduleDir, 'main.js')
       if (!fs.existsSync(mainJs)) return []
       const src = fs.readFileSync(mainJs, 'utf-8')
-      // Find .setActionDefinitions( call (module's own invocation, not the base class)
+      const ids = new Set()
+
+      // Pattern 1 (older modules): setActionDefinitions({ actionId: { name: ... } })
+      // Finds the largest chunk after .setActionDefinitions( and scans it
       const needle = '.setActionDefinitions('
-      let best = null
-      let bestSize = 0
-      let pos = 0
+      let best = null, bestSize = 0, pos = 0
       while ((pos = src.indexOf(needle, pos)) !== -1) {
-        // Skip if it looks like a method definition (followed by e){ or similar)
         const after = src.slice(pos + needle.length, pos + needle.length + 10)
         if (/^(e|t|i|s|r|n)\)/.test(after)) { pos++; continue }
-        const chunkStart = pos + needle.length
-        const chunk = src.slice(chunkStart, chunkStart + 100000)
+        const chunk = src.slice(pos + needle.length, pos + needle.length + 200000)
         if (chunk.length > bestSize) { best = chunk; bestSize = chunk.length }
         pos++
       }
-      if (!best) return []
-      // Extract top-level keys that look like action IDs followed by an object with name/label
-      const ids = [...best.matchAll(/[{,]([a-z][a-z0-9_]{1,50}):\s*\{[^}]{0,400}(?:name|label)\s*:/g)]
-        .map(m => m[1])
-        .filter(k => !['options', 'description', 'type', 'value', 'default', 'choices', 'style', 'size'].includes(k))
-      return [...new Set(ids)]
+      if (best) {
+        for (const m of best.matchAll(/[{,]([a-z][a-z0-9_]{1,60}):\s*\{[^}]{0,400}(?:name|label)\s*:/g)) {
+          ids.add(m[1])
+        }
+      }
+
+      // Pattern 2 (newer v5 modules like ATEM): actionId: 'some_action_id'
+      for (const m of src.matchAll(/actionId:\s*['"]([a-z_][a-z0-9_]{1,60})['"]/g)) {
+        ids.add(m[1])
+      }
+
+      // Pattern 3 (object shorthand): { id: 'action_name', name: '...', options: }
+      for (const m of src.matchAll(/\bid:\s*['"]([a-z_][a-z0-9_]{1,60})['"]\s*,\s*(?:name|label):/g)) {
+        ids.add(m[1])
+      }
+
+      const SKIP = new Set(['options', 'description', 'type', 'value', 'default', 'choices',
+        'style', 'size', 'text', 'min', 'max', 'step', 'regex', 'tooltip', 'width', 'height'])
+      return [...ids].filter(k => !SKIP.has(k))
     } catch (_) { return [] }
   }
 
@@ -611,16 +625,31 @@ app.whenReady().then(() => {
           .filter(a => a.connectionId === connId)
           .map(a => a.definitionId)
         const allIds = [...new Set([...fromUsed, ...fromModule])]
-        for (const defId of allIds) {
-          const usedTemplate = usedActions[`${connId}:${defId}`]
+
+        if (allIds.length === 0) {
+          // Connection known but no actions scanned — show it with a placeholder
           result.push({
             connectionId: connId,
             connectionLabel: conn.label,
             moduleId,
-            definitionId: defId,
-            options: usedTemplate?.options ?? {},
-            usedBefore: !!usedTemplate,
+            definitionId: '',   // empty means "unknown actions"
+            options: {},
+            usedBefore: false,
+            noActions: true,
           })
+        } else {
+          for (const defId of allIds) {
+            const usedTemplate = usedActions[`${connId}:${defId}`]
+            result.push({
+              connectionId: connId,
+              connectionLabel: conn.label,
+              moduleId,
+              definitionId: defId,
+              options: usedTemplate?.options ?? {},
+              usedBefore: !!usedTemplate,
+              noActions: false,
+            })
+          }
         }
       }
 
