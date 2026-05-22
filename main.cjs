@@ -689,8 +689,9 @@ app.whenReady().then(() => {
           if (ws) {
             const data = await trpcSubscribeOnce(ws, 'instances.connections.watch')
             console.log('[library] instances.connections.watch raw:', JSON.stringify(data)?.slice(0, 300))
-            // Handle { type: 'init', info: {...} } or data directly as a map
-            const infoMap = (data?.type === 'init' && data.info) ? data.info : (typeof data === 'object' && data !== null && !data.type ? data : null)
+            // Response is an array of update messages; first is { type:'init', info:{...} }
+            const firstEvent = Array.isArray(data) ? data[0] : data
+            const infoMap = (firstEvent?.type === 'init' && firstEvent.info) ? firstEvent.info : null
             if (infoMap) {
               for (const [id, conn] of Object.entries(infoMap)) {
                 if (!conn || typeof conn !== 'object') continue
