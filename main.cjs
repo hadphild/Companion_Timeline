@@ -74,6 +74,34 @@ function trpcCall(ws, method, path, input) {
   })
 }
 
+// Companion v5 tRPC uses subscriptions for data reads.
+// This subscribes, waits for the first data push, then unsubscribes.
+function trpcSubscribeOnce(ws, path, input = {}, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const id = trpcMsgId++
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      ws.off('message', handler)
+      try { ws.send(JSON.stringify({ id, method: 'subscription.stop' })) } catch (_) {}
+      resolve(result)
+    }
+    const timer = setTimeout(() => finish(null), timeoutMs)
+    const handler = (data) => {
+      try {
+        const msg = JSON.parse(data)
+        if (msg.id !== id) return
+        if (msg.result?.type === 'data') finish(msg.result.data)
+        if (msg.error) finish(null)
+      } catch (_) {}
+    }
+    ws.on('message', handler)
+    ws.send(JSON.stringify({ id, method: 'subscription', params: { path, input } }))
+  })
+}
+
 // Wrap an option value in Companion v5 format
 function wrapOptionValue(v) {
   return { value: String(v ?? ''), isExpression: false }
@@ -585,27 +613,28 @@ app.whenReady().then(() => {
           }
         }
       } else {
-        // Remote: query connections via tRPC (most reliable), fall back to HTTP API
+        // Remote: query connections via tRPC subscription (Companion v5 uses subscriptions for reads)
         let gotConnections = false
         try {
           const ws = await getCompanionTRPC()
           if (ws) {
-            // Try known tRPC query procedure names for connection list
-            for (const proc of ['connections.getAll', 'instances.getAll', 'connections.get']) {
-              const data = await trpcCall(ws, 'query', proc, {})
-              if (!data) continue
-              const list = Array.isArray(data) ? data
-                : typeof data === 'object' ? Object.entries(data).map(([id, v]) => ({ id, ...(typeof v === 'object' && v !== null ? v : {}) }))
-                : []
-              if (list.length > 0) {
-                for (const conn of list) {
-                  const id = conn.id || conn.uid
-                  if (!id) continue
-                  connections[id] = { label: conn.label || id, moduleId: conn.instance_type || conn.moduleId || conn.module || '' }
+            // Companion v5 exposes connection data via subscriptions, not queries
+            for (const proc of ['connections.subscribeAll', 'instances.subscribeAll', 'connections.subscribe']) {
+              const data = await trpcSubscribeOnce(ws, proc)
+              if (!data || typeof data !== 'object') continue
+              // Response is Record<id, { label, instance_type, ... }>
+              const entries = Object.entries(data)
+              if (entries.length === 0) continue
+              for (const [id, conn] of entries) {
+                if (!conn || typeof conn !== 'object') continue
+                connections[id] = {
+                  label: conn.label || id,
+                  moduleId: conn.instance_type || conn.moduleId || conn.module_id || ''
                 }
-                gotConnections = true
-                break
               }
+              gotConnections = true
+              console.log(`[library] got ${entries.length} connections via tRPC ${proc}`)
+              break
             }
           }
         } catch (e) {
@@ -626,11 +655,13 @@ app.whenReady().then(() => {
                   if (!id) continue
                   connections[id] = { label: conn.label || id, moduleId: conn.instance_type || conn.moduleId || '' }
                 }
+                gotConnections = true
                 break
               }
             } catch (_) {}
           }
         }
+        if (!gotConnections) console.warn(`[library] could not fetch connections from remote ${host}`)
       }
 
       // Scan installed modules to extract action IDs (always local — modules are installed locally)
@@ -700,22 +731,22 @@ app.whenReady().then(() => {
       const pages = {}
       const controls = {}
 
-      // Try tRPC first for pages, then HTTP
+      // Try tRPC subscriptions first for pages (Companion v5 uses subscriptions for reads)
       try {
         const ws = await getCompanionTRPC()
         if (ws) {
-          for (const proc of ['pages.getAll', 'pages.get', 'page.getAll']) {
-            const data = await trpcCall(ws, 'query', proc, {})
-            if (!data) continue
-            const pageMap = (typeof data === 'object' && data.pages) ? data.pages : data
-            const entries = Object.entries(pageMap || {})
-            if (entries.length > 0) {
-              for (const [pageNum, info] of entries) {
-                if (isNaN(Number(pageNum))) continue
-                pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
-              }
-              break
+          for (const proc of ['pages.subscribeAll', 'pages.subscribe', 'page.subscribeAll']) {
+            const data = await trpcSubscribeOnce(ws, proc)
+            if (!data || typeof data !== 'object') continue
+            const pageMap = data.pages ?? data
+            const entries = Object.entries(pageMap)
+            if (entries.length === 0) continue
+            for (const [pageNum, info] of entries) {
+              if (isNaN(Number(pageNum))) continue
+              pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
             }
+            console.log(`[remote] got ${entries.length} pages via tRPC ${proc}`)
+            break
           }
         }
       } catch (e) {
