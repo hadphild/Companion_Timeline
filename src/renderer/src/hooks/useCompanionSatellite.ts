@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 
-const SATELLITE_URL = 'ws://127.0.0.1:16623'
 const COLS_PER_ROW = 8
 
 // Convert bank:PAGE-SLOT key to Satellite LOCATION string (page/row/col, 0-indexed row+col)
@@ -35,7 +34,7 @@ function parseMessage(line: string): { cmd: string; args: Record<string, string>
   if (!trimmed) return null
   const parts = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g) ?? []
   if (parts.length === 0) return null
-  const cmd = parts[0]
+  const cmd = parts[0] as string
   const args: Record<string, string> = {}
   for (let i = 1; i < parts.length; i++) {
     const eq = parts[i].indexOf('=')
@@ -67,7 +66,8 @@ export interface SatelliteHandle {
 
 export function useCompanionSatellite(
   onConnect: () => void,
-  onDisconnect: () => void
+  onDisconnect: () => void,
+  host = '127.0.0.1'
 ): SatelliteHandle {
   const [isConnected, setIsConnected] = useState(false)
   const [subscriptionsEnabled, setSubscriptionsEnabled] = useState(false)
@@ -88,7 +88,7 @@ export function useCompanionSatellite(
     let ws: WebSocket
 
     function connect() {
-      ws = new WebSocket(SATELLITE_URL)
+      ws = new WebSocket(`ws://${host}:16623`)
       wsRef.current = ws
       let buffer = ''
 
@@ -176,7 +176,7 @@ export function useCompanionSatellite(
       ws?.close()
       wsRef.current = null
     }
-  }, [])
+  }, [host])
 
   const subscribeToPage = useCallback((bankKeys: string[]) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -213,10 +213,10 @@ export function useCompanionSatellite(
     if (!loc) return
     const [page, row, col] = loc.split('/')
     const endpoint = pressed ? 'down' : 'up'
-    fetch(`http://127.0.0.1:8000/api/location/${page}/${row}/${col}/${endpoint}`, { method: 'POST' })
+    fetch(`http://${host}:8000/api/location/${page}/${row}/${col}/${endpoint}`, { method: 'POST' })
       .then(r => console.log('[satellite] press', endpoint, r.status))
       .catch(e => console.log('[satellite] press error', e.message))
-  }, [])
+  }, [host])
 
   return { isConnected, subscriptionsEnabled, buttonStates, subscribeToPage, pressButton }
 }

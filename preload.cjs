@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('api', {
   saveSilent: (content) => ipcRenderer.invoke('companion:saveSilent', content),
   pausePolling: () => ipcRenderer.invoke('companion:pausePolling'),
   resumePolling: () => ipcRenderer.invoke('companion:resumePolling'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
 })

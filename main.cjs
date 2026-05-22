@@ -5,8 +5,27 @@ const os = require('os')
 const Database = require('better-sqlite3')
 const WebSocket = require('ws')
 
+// ── Settings store ────────────────────────────────────────────────────────────
+
+let _settingsCache = null
+function getSettingsPath() { return path.join(app.getPath('userData'), 'settings.json') }
+function readSettings() {
+  if (_settingsCache) return _settingsCache
+  try { _settingsCache = JSON.parse(fs.readFileSync(getSettingsPath(), 'utf-8')) } catch { _settingsCache = {} }
+  return _settingsCache
+}
+function writeSettings(patch) {
+  const s = { ...readSettings(), ...patch }
+  fs.writeFileSync(getSettingsPath(), JSON.stringify(s, null, 2))
+  _settingsCache = s
+  // Reset tRPC connection so next call reconnects to the new host
+  if (patch.companionHost !== undefined) { trpcWs = null }
+}
+function getCompanionHost() { return readSettings().companionHost || '127.0.0.1' }
+function isLocalHost(host) { return !host || host === '127.0.0.1' || host === 'localhost' }
+
 // ── Companion tRPC live-sync ──────────────────────────────────────────────────
-// Companion v5 exposes a tRPC WebSocket at ws://127.0.0.1:8000/trpc.
+// Companion v5 exposes a tRPC WebSocket at ws://HOST:8000/trpc.
 // We use it to push changes into Companion's in-memory model immediately after
 // writing to SQLite, so changes appear without restarting Companion.
 
@@ -17,8 +36,9 @@ function getCompanionTRPC() {
   return new Promise((resolve) => {
     if (trpcWs && trpcWs.readyState === WebSocket.OPEN) return resolve(trpcWs)
 
-    const ws = new WebSocket('ws://127.0.0.1:8000/trpc', {
-      headers: { Origin: 'http://127.0.0.1:8000' },
+    const host = getCompanionHost()
+    const ws = new WebSocket(`ws://${host}:8000/trpc`, {
+      headers: { Origin: `http://${host}:8000` },
       handshakeTimeout: 3000
     })
     const done = (result) => {
@@ -525,132 +545,111 @@ app.whenReady().then(() => {
     } catch (_) { return [] }
   }
 
+  // ── Settings IPC ───────────────────────────────────────────────────────────
+  ipcMain.handle('settings:get', () => readSettings())
+  ipcMain.handle('settings:set', (_event, patch) => { writeSettings(patch); return true })
+
   ipcMain.handle('companion:getActionLibrary', async () => {
+    const host = getCompanionHost()
     try {
-      // 1. Build connection map from instances
-      const instRows = sqliteQuery(COMPANION_V5_DB, 'SELECT id, value FROM instances')
-      const connections = {}  // connectionId → { label, moduleId, moduleVersionId }
-      for (const row of instRows) {
-        const inst = JSON.parse(row.value)
-        if (inst.moduleInstanceType !== 'connection') continue
-        connections[row.id] = {
-          label: inst.label || row.id,
-          moduleId: inst.moduleId || '',
-          moduleVersionId: inst.moduleVersionId || '',
+      // Build connection map: local SQLite or remote HTTP API
+      const connections = {}  // connectionId → { label, moduleId }
+      const usedActions = {}  // "connectionId:definitionId" → { options }
+
+      if (isLocalHost(host)) {
+        const instRows = sqliteQuery(COMPANION_V5_DB, 'SELECT id, value FROM instances')
+        for (const row of instRows) {
+          const inst = JSON.parse(row.value)
+          if (inst.moduleInstanceType !== 'connection') continue
+          connections[row.id] = { label: inst.label || row.id, moduleId: inst.moduleId || '' }
+        }
+
+        // Scan existing controls for used action options (as templates)
+        const ctrlRows = sqliteQuery(COMPANION_V5_DB, 'SELECT value FROM controls')
+        for (const row of ctrlRows) {
+          const ctrl = JSON.parse(row.value)
+          for (const step of Object.values(ctrl.steps || {})) {
+            for (const actions of Object.values(step.action_sets || {})) {
+              for (const a of (actions || [])) {
+                if (!a.connectionId || !a.definitionId) continue
+                const key = `${a.connectionId}:${a.definitionId}`
+                if (!usedActions[key]) {
+                  const opts = {}
+                  for (const [k, v] of Object.entries(a.options || {})) {
+                    opts[k] = (v !== null && typeof v === 'object' && 'value' in v) ? v.value : v
+                  }
+                  usedActions[key] = { connectionId: a.connectionId, definitionId: a.definitionId, options: opts }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        // Remote: fetch connections from Companion HTTP API
+        try {
+          const resp = await fetch(`http://${host}:8000/api/connections`, { signal: AbortSignal.timeout(5000) })
+          if (resp.ok) {
+            const data = await resp.json()
+            const list = Array.isArray(data) ? data : (data.connections || data.instances || [])
+            for (const conn of list) {
+              const id = conn.id || conn.uid
+              if (!id) continue
+              connections[id] = { label: conn.label || id, moduleId: conn.instance_type || conn.moduleId || '' }
+            }
+          }
+        } catch (e) {
+          console.warn('[library] remote connections fetch failed:', e.message)
         }
       }
 
-      // 2. Scan installed modules to extract action IDs for each connected module
+      // Scan installed modules to extract action IDs (always local — modules are installed locally)
       const MODULES_DIR = path.join(COMPANION_BASE, 'modules')
-      const moduleActionIds = {}  // moduleId → string[]
+      const moduleActionIds = {}
       if (fs.existsSync(MODULES_DIR)) {
         for (const entry of fs.readdirSync(MODULES_DIR)) {
-          // entry format: moduleId-version (e.g. figure53-qlab-advance-2.11.4)
           const moduleDir = path.join(MODULES_DIR, entry)
           if (!fs.statSync(moduleDir).isDirectory()) continue
-          // Find the moduleId from the companion manifest
           const manifestPath = path.join(moduleDir, 'companion', 'manifest.json')
           let moduleId = null
           if (fs.existsSync(manifestPath)) {
             try { moduleId = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')).id } catch (_) {}
           }
-          if (!moduleId) {
-            // Fall back: strip version suffix from directory name
-            moduleId = entry.replace(/-\d+\.\d+.*$/, '')
-          }
-          if (!moduleActionIds[moduleId]) {
-            moduleActionIds[moduleId] = extractModuleActionIds(moduleDir)
-          }
+          if (!moduleId) moduleId = entry.replace(/-\d+\.\d+.*$/, '')
+          if (!moduleActionIds[moduleId]) moduleActionIds[moduleId] = extractModuleActionIds(moduleDir)
         }
       }
 
-      // 3. Scan existing controls for actions already in use (with their options as templates)
-      const usedActions = {}  // "connectionId:definitionId" → { connectionId, definitionId, options }
-      const ctrlRows = sqliteQuery(COMPANION_V5_DB, 'SELECT value FROM controls')
-      for (const row of ctrlRows) {
-        const ctrl = JSON.parse(row.value)
-        for (const step of Object.values(ctrl.steps || {})) {
-          for (const actions of Object.values(step.action_sets || {})) {
-            for (const a of (actions || [])) {
-              if (!a.connectionId || !a.definitionId) continue
-              const key = `${a.connectionId}:${a.definitionId}`
-              if (!usedActions[key]) {
-                const opts = {}
-                for (const [k, v] of Object.entries(a.options || {})) {
-                  opts[k] = (v !== null && typeof v === 'object' && 'value' in v) ? v.value : v
-                }
-                usedActions[key] = { connectionId: a.connectionId, definitionId: a.definitionId, options: opts }
-              }
-            }
-          }
-        }
-      }
-
-      // 4. Add internal Companion actions
+      // Internal Companion actions
       const INTERNAL_ACTIONS = [
-        { definitionId: 'action_group',          label: 'Action Group (run actions concurrently or sequentially)' },
-        { definitionId: 'log',                   label: 'Log message' },
-        { definitionId: 'set_page_by_id',        label: 'Set page (by ID)' },
-        { definitionId: 'set_page_by_name',      label: 'Set page (by name)' },
-        { definitionId: 'button_pressrelease',   label: 'Button — press and release' },
-        { definitionId: 'button_press',          label: 'Button — press' },
-        { definitionId: 'button_release',        label: 'Button — release' },
-        { definitionId: 'button_rotate_left',    label: 'Button — rotate left' },
-        { definitionId: 'button_rotate_right',   label: 'Button — rotate right' },
-        { definitionId: 'variable_set_number',   label: 'Set custom variable (number)' },
-        { definitionId: 'variable_set_string',   label: 'Set custom variable (string)' },
-        { definitionId: 'instance_control',      label: 'Set connection enabled/disabled' },
-        { definitionId: 'kill_all_delays',       label: 'Kill all delays in progress' },
+        'action_group', 'log', 'set_page_by_id', 'set_page_by_name',
+        'button_pressrelease', 'button_press', 'button_release',
+        'button_rotate_left', 'button_rotate_right',
+        'variable_set_number', 'variable_set_string',
+        'instance_control', 'kill_all_delays',
       ]
-
-      // Merge any internally-used actions from existing controls
       const internalUsed = Object.values(usedActions).filter(a => a.connectionId === 'internal')
-      const internalIds = new Set([...INTERNAL_ACTIONS.map(a => a.definitionId), ...internalUsed.map(a => a.definitionId)])
+      const internalIds = [...new Set([...INTERNAL_ACTIONS, ...internalUsed.map(a => a.definitionId)])]
+
       const result = []
       for (const defId of internalIds) {
         const usedTemplate = usedActions[`internal:${defId}`]
-        result.push({
-          connectionId: 'internal',
-          connectionLabel: 'Internal',
-          moduleId: 'internal',
-          definitionId: defId,
-          options: usedTemplate?.options ?? {},
-          usedBefore: !!usedTemplate,
-        })
+        result.push({ connectionId: 'internal', connectionLabel: 'Internal', moduleId: 'internal',
+          definitionId: defId, options: usedTemplate?.options ?? {}, usedBefore: !!usedTemplate })
       }
 
-      // 5. Merge: for each connection, emit all known action IDs (from module scan + used actions)
       for (const [connId, conn] of Object.entries(connections)) {
-        const moduleId = conn.moduleId
-        const fromModule = moduleActionIds[moduleId] || []
-        const fromUsed = Object.values(usedActions)
-          .filter(a => a.connectionId === connId)
-          .map(a => a.definitionId)
+        const fromModule = moduleActionIds[conn.moduleId] || []
+        const fromUsed = Object.values(usedActions).filter(a => a.connectionId === connId).map(a => a.definitionId)
         const allIds = [...new Set([...fromUsed, ...fromModule])]
 
         if (allIds.length === 0) {
-          // Connection known but no actions scanned — show it with a placeholder
-          result.push({
-            connectionId: connId,
-            connectionLabel: conn.label,
-            moduleId,
-            definitionId: '',   // empty means "unknown actions"
-            options: {},
-            usedBefore: false,
-            noActions: true,
-          })
+          result.push({ connectionId: connId, connectionLabel: conn.label, moduleId: conn.moduleId,
+            definitionId: '', options: {}, usedBefore: false, noActions: true })
         } else {
           for (const defId of allIds) {
             const usedTemplate = usedActions[`${connId}:${defId}`]
-            result.push({
-              connectionId: connId,
-              connectionLabel: conn.label,
-              moduleId,
-              definitionId: defId,
-              options: usedTemplate?.options ?? {},
-              usedBefore: !!usedTemplate,
-              noActions: false,
-            })
+            result.push({ connectionId: connId, connectionLabel: conn.label, moduleId: conn.moduleId,
+              definitionId: defId, options: usedTemplate?.options ?? {}, usedBefore: !!usedTemplate, noActions: false })
           }
         }
       }
@@ -662,7 +661,22 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('companion:loadLive', async () => {
-    // Prefer v5 SQLite, fall back to v3 JSON
+    const host = getCompanionHost()
+
+    if (!isLocalHost(host)) {
+      // Remote: return an empty config shell — satellite will show live states
+      // and tRPC will push edits to the remote host
+      return {
+        filePath: `remote://${host}`,
+        content: JSON.stringify({ _source: 'remote', host, pages: {}, controls: {} }),
+        isLiveDb: true,
+        version: 5,
+        isRemote: true,
+        remoteHost: host,
+      }
+    }
+
+    // Local: prefer v5 SQLite, fall back to v3 JSON
     if (fs.existsSync(COMPANION_V5_DB)) {
       try {
         const config = readV5Database()

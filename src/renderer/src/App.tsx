@@ -53,6 +53,31 @@ export default function App() {
   // Undo history
   const historyRef = useRef<CompanionConfig[]>([])
 
+  const [companionHost, setCompanionHost] = useState('127.0.0.1')
+  const [showHostInput, setShowHostInput] = useState(false)
+  const [hostDraft, setHostDraft] = useState('127.0.0.1')
+
+  // Load persisted host setting on startup
+  useEffect(() => {
+    window.api.getSettings().then((s: any) => {
+      const h = s?.companionHost || '127.0.0.1'
+      setCompanionHost(h)
+      setHostDraft(h)
+    })
+  }, [])
+
+  const applyHost = useCallback((host: string) => {
+    const h = host.trim() || '127.0.0.1'
+    setCompanionHost(h)
+    setHostDraft(h)
+    setShowHostInput(false)
+    window.api.setSettings({ companionHost: h })
+    // Reload from Companion with new host
+    setConfig(null)
+    setFilePath(null)
+    setIsLiveDb(false)
+  }, [])
+
   // Satellite API — live button bitmaps + Companion detection
   const satellite = useCompanionSatellite(
     useCallback(async () => {
@@ -64,7 +89,8 @@ export default function App() {
         }
       }
     }, []),
-    useCallback(() => {}, [])
+    useCallback(() => {}, []),
+    companionHost
   )
 
   // Subscribe button grid to satellite when config, connection, or subscriptions change
@@ -747,6 +773,30 @@ export default function App() {
           <span className="app-version" title={`Built ${__BUILD_DATE__}`}>v{__APP_VERSION__} · build {__BUILD_NUMBER__}</span>
         </div>
         <div className="titlebar-actions">
+          {showHostInput ? (
+            <form
+              className="host-input-form"
+              onSubmit={e => { e.preventDefault(); applyHost(hostDraft) }}
+            >
+              <input
+                className="host-input"
+                value={hostDraft}
+                onChange={e => setHostDraft(e.target.value)}
+                placeholder="192.168.1.x"
+                autoFocus
+                onBlur={() => applyHost(hostDraft)}
+                onKeyDown={e => e.key === 'Escape' && setShowHostInput(false)}
+              />
+            </form>
+          ) : (
+            <button
+              className={`toolbar-btn host-btn ${companionHost !== '127.0.0.1' ? 'host-btn--remote' : ''}`}
+              onClick={() => { setHostDraft(companionHost); setShowHostInput(true) }}
+              title={`Companion host: ${companionHost} — click to change`}
+            >
+              {companionHost === '127.0.0.1' ? '⌂ Local' : `⇄ ${companionHost}`}
+            </button>
+          )}
           <button
             className="toolbar-btn"
             onClick={handleStop}
