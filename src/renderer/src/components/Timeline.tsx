@@ -307,7 +307,7 @@ export default function Timeline({
     onActionDrop(currentStepKey, triggerKey, ms, template)
   }, [pxToMs, snapMs, onActionDrop, currentStepKey])
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault()
     if (e.metaKey || e.ctrlKey) {
       setVisibleMs(v => Math.max(MIN_ZOOM_MS, Math.min(MAX_ZOOM_MS, v * (e.deltaY > 0 ? 1.2 : 0.8))))
@@ -316,6 +316,14 @@ export default function Timeline({
       setScrollMs(s => Math.max(0, s + (e.deltaX || e.deltaY) / pxPerMs(w)))
     }
   }, [pxPerMs])
+
+  // Attach wheel listener with passive:false so preventDefault() works
+  useEffect(() => {
+    const el = trackAreaRef.current
+    if (!el) return
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [handleWheel])
 
   const containerWidth = (trackAreaRef.current?.clientWidth ?? 900) - LABEL_WIDTH
 
@@ -412,7 +420,7 @@ export default function Timeline({
       </div>
 
       {/* Timeline tracks */}
-      <div className="timeline" onWheel={handleWheel} ref={trackAreaRef}>
+      <div className="timeline" ref={trackAreaRef}>
         {/* Ruler — click to set playhead */}
         <div className="timeline-ruler" style={{ height: RULER_HEIGHT }}>
           <div className="ruler-track-label" style={{ width: LABEL_WIDTH }} />

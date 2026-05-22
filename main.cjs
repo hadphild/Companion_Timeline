@@ -641,6 +641,16 @@ app.whenReady().then(() => {
   }
 
   // ── Settings IPC ───────────────────────────────────────────────────────────
+  // Migrate settings on startup: strip any port embedded in companionHost
+  ;(() => {
+    const s = readSettings()
+    const { host, port } = parseHostPort(s.companionHost || '127.0.0.1')
+    if (host !== s.companionHost || (!s.companionPort && port !== 8000)) {
+      writeSettings({ companionHost: host, companionPort: s.companionPort || port })
+      console.log(`[settings] migrated host: ${s.companionHost} → ${host}:${s.companionPort || port}`)
+    }
+  })()
+
   ipcMain.handle('settings:get', () => readSettings())
   ipcMain.handle('settings:set', (_event, patch) => { writeSettings(patch); return true })
 
