@@ -127,7 +127,9 @@ function sqliteWrite(dbPath, fn) {
 
 const COMPANION_BASE = process.platform === 'win32'
   ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'companion')
-  : path.join(os.homedir(), 'Library/Application Support/companion')
+  : process.platform === 'linux'
+    ? path.join(os.homedir(), '.local/share/companion')
+    : path.join(os.homedir(), 'Library/Application Support/companion')
 const COMPANION_V5_DB = path.join(COMPANION_BASE, 'v5.0/db.sqlite')
 const COMPANION_V5_DB_BAK = path.join(COMPANION_BASE, 'v5.0/db.sqlite.bak')
 const COMPANION_JSON_DB = path.join(COMPANION_BASE, 'v3.0/db')
@@ -539,7 +541,7 @@ app.whenReady().then(() => {
       }
 
       // 2. Scan installed modules to extract action IDs for each connected module
-      const MODULES_DIR = path.join(os.homedir(), 'Library/Application Support/companion/modules')
+      const MODULES_DIR = path.join(COMPANION_BASE, 'modules')
       const moduleActionIds = {}  // moduleId → string[]
       if (fs.existsSync(MODULES_DIR)) {
         for (const entry of fs.readdirSync(MODULES_DIR)) {

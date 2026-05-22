@@ -11,6 +11,7 @@
     "start": "env -u ELECTRON_RUN_AS_NODE node .electron-runner/node_modules/electron/cli.js main.cjs",
     "package": "vite build && electron-builder --mac",
     "package:win": "vite build && electron-builder --win",
+    "package:linux": "vite build && electron-builder --linux",
     "release:patch": "npm version patch && npm run package",
     "release:minor": "npm version minor && npm run package",
     "release:major": "npm version major && npm run package"
@@ -40,6 +41,23 @@
           ]
         }
       ]
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Utility"
     },
     "files": [
       "dist/**",
