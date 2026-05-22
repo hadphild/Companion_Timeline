@@ -677,15 +677,18 @@ app.whenReady().then(() => {
         }
       } else {
         // Remote: query connections via tRPC subscription
-        // Companion v5 procedure: instances.connections.watch
+        // Companion v5 procedure: connections.watch
         // First event: { type: 'init', info: Record<id, { label, moduleId, ... }> }
         let gotConnections = false
         try {
           const ws = await getCompanionTRPC()
           if (ws) {
-            const data = await trpcSubscribeOnce(ws, 'instances.connections.watch')
-            if (data && data.type === 'init' && data.info && typeof data.info === 'object') {
-              for (const [id, conn] of Object.entries(data.info)) {
+            const data = await trpcSubscribeOnce(ws, 'connections.watch')
+            console.log('[library] connections.watch raw:', JSON.stringify(data)?.slice(0, 300))
+            // Handle { type: 'init', info: {...} } or data directly as a map
+            const infoMap = (data?.type === 'init' && data.info) ? data.info : (typeof data === 'object' && data !== null && !data.type ? data : null)
+            if (infoMap) {
+              for (const [id, conn] of Object.entries(infoMap)) {
                 if (!conn || typeof conn !== 'object') continue
                 connections[id] = { label: conn.label || id, moduleId: conn.moduleId || conn.instance_type || '' }
               }
@@ -772,9 +775,10 @@ app.whenReady().then(() => {
         const ws = await getCompanionTRPC()
         if (ws) {
           const data = await trpcSubscribeOnce(ws, 'pages.watch')
+          console.log('[remote] pages.watch raw:', JSON.stringify(data)?.slice(0, 300))
           if (data && typeof data === 'object') {
             // Response may be { type: 'init', pages: {...} } or directly { "1": { name: ... }, ... }
-            const pageMap = data.pages ?? (data.type === 'init' ? data.info : null) ?? data
+            const pageMap = data.pages ?? data.info?.pages ?? (data.type === 'init' ? data.info : null) ?? data
             for (const [pageNum, info] of Object.entries(pageMap || {})) {
               if (isNaN(Number(pageNum))) continue
               pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
