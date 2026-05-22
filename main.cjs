@@ -585,20 +585,51 @@ app.whenReady().then(() => {
           }
         }
       } else {
-        // Remote: fetch connections from Companion HTTP API
+        // Remote: query connections via tRPC (most reliable), fall back to HTTP API
+        let gotConnections = false
         try {
-          const resp = await fetch(`http://${host}:8000/api/connections`, { signal: AbortSignal.timeout(5000) })
-          if (resp.ok) {
-            const data = await resp.json()
-            const list = Array.isArray(data) ? data : (data.connections || data.instances || [])
-            for (const conn of list) {
-              const id = conn.id || conn.uid
-              if (!id) continue
-              connections[id] = { label: conn.label || id, moduleId: conn.instance_type || conn.moduleId || '' }
+          const ws = await getCompanionTRPC()
+          if (ws) {
+            // Try known tRPC query procedure names for connection list
+            for (const proc of ['connections.getAll', 'instances.getAll', 'connections.get']) {
+              const data = await trpcCall(ws, 'query', proc, {})
+              if (!data) continue
+              const list = Array.isArray(data) ? data
+                : typeof data === 'object' ? Object.entries(data).map(([id, v]) => ({ id, ...(typeof v === 'object' && v !== null ? v : {}) }))
+                : []
+              if (list.length > 0) {
+                for (const conn of list) {
+                  const id = conn.id || conn.uid
+                  if (!id) continue
+                  connections[id] = { label: conn.label || id, moduleId: conn.instance_type || conn.moduleId || conn.module || '' }
+                }
+                gotConnections = true
+                break
+              }
             }
           }
         } catch (e) {
-          console.warn('[library] remote connections fetch failed:', e.message)
+          console.warn('[library] remote tRPC connections failed:', e.message)
+        }
+
+        if (!gotConnections) {
+          // Fall back to HTTP API — try a few known endpoint paths
+          for (const path of ['/api/connections', '/api/instances', '/api/v1/connections']) {
+            try {
+              const resp = await fetch(`http://${host}:8000${path}`, { signal: AbortSignal.timeout(3000) })
+              if (!resp.ok) continue
+              const data = await resp.json()
+              const list = Array.isArray(data) ? data : (data.connections || data.instances || [])
+              if (list.length > 0) {
+                for (const conn of list) {
+                  const id = conn.id || conn.uid
+                  if (!id) continue
+                  connections[id] = { label: conn.label || id, moduleId: conn.instance_type || conn.moduleId || '' }
+                }
+                break
+              }
+            } catch (_) {}
+          }
         }
       }
 
@@ -669,20 +700,45 @@ app.whenReady().then(() => {
       const pages = {}
       const controls = {}
 
+      // Try tRPC first for pages, then HTTP
       try {
-        const resp = await fetch(`http://${host}:8000/api/pages`, { signal: AbortSignal.timeout(5000) })
-        if (resp.ok) {
-          const data = await resp.json()
-          // Companion v5 returns { pages: { "1": { name: "..." }, ... } }
-          // or just { "1": { name: "..." } } — handle both
-          const pageMap = data.pages ?? data
-          for (const [pageNum, info] of Object.entries(pageMap)) {
-            if (isNaN(Number(pageNum))) continue
-            pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
+        const ws = await getCompanionTRPC()
+        if (ws) {
+          for (const proc of ['pages.getAll', 'pages.get', 'page.getAll']) {
+            const data = await trpcCall(ws, 'query', proc, {})
+            if (!data) continue
+            const pageMap = (typeof data === 'object' && data.pages) ? data.pages : data
+            const entries = Object.entries(pageMap || {})
+            if (entries.length > 0) {
+              for (const [pageNum, info] of entries) {
+                if (isNaN(Number(pageNum))) continue
+                pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
+              }
+              break
+            }
           }
         }
       } catch (e) {
-        console.warn(`[remote] could not fetch pages from ${host}:`, e.message)
+        console.warn(`[remote] tRPC pages failed:`, e.message)
+      }
+
+      if (Object.keys(pages).length === 0) {
+        for (const path of ['/api/pages', '/api/v1/pages']) {
+          try {
+            const resp = await fetch(`http://${host}:8000${path}`, { signal: AbortSignal.timeout(3000) })
+            if (!resp.ok) continue
+            const data = await resp.json()
+            const pageMap = data.pages ?? data
+            const entries = Object.entries(pageMap || {})
+            if (entries.length > 0) {
+              for (const [pageNum, info] of entries) {
+                if (isNaN(Number(pageNum))) continue
+                pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
+              }
+              break
+            }
+          } catch (_) {}
+        }
       }
 
       // Default to pages 1–10 if we couldn't get the list

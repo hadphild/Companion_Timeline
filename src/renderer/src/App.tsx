@@ -66,22 +66,26 @@ export default function App() {
     })
   }, [])
 
-  const applyHost = useCallback((host: string) => {
+  const applyHost = useCallback(async (host: string) => {
     const h = host.trim() || '127.0.0.1'
-    setCompanionHost(h)
     setHostDraft(h)
     setShowHostInput(false)
-    window.api.setSettings({ companionHost: h })
-    // Reload from Companion with new host
     setConfig(null)
     setFilePath(null)
     setIsLiveDb(false)
+    await window.api.setSettings({ companionHost: h })
+    setCompanionHost(h) // triggers satellite reconnect after settings saved
+    // Load config immediately — don't wait for satellite onConnect
+    const result = await window.api.loadFromCompanion()
+    if (!('error' in result)) {
+      try { loadConfigRef.current(JSON.parse(result.content), result.filePath, true) } catch (_) {}
+    }
   }, [])
 
   // Satellite API — live button bitmaps + Companion detection
   const satellite = useCompanionSatellite(
     useCallback(async () => {
-      // Socket connected → Companion is running, auto-load if not already loaded
+      // Satellite connected — load config if not already loaded for this host
       if (!configRef.current) {
         const result = await window.api.loadFromCompanion()
         if (!('error' in result)) {
