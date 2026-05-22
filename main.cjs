@@ -114,7 +114,10 @@ function trpcSubscribeOnce(ws, path, input = {}, timeoutMs = 5000) {
         const msg = JSON.parse(data)
         if (msg.id !== id) return
         if (msg.result?.type === 'data') finish(msg.result.data)
-        if (msg.error) finish(null)
+        if (msg.error) {
+          console.warn(`[tRPC] subscription error for "${path}":`, JSON.stringify(msg.error).slice(0, 300))
+          finish(null)
+        }
       } catch (_) {}
     }
     ws.on('message', handler)
@@ -123,7 +126,7 @@ function trpcSubscribeOnce(ws, path, input = {}, timeoutMs = 5000) {
 }
 
 // Push a remote config's actions to Companion via tRPC.
-// Uses the bank key directly as the controlId (Companion v5 accepts location-based IDs).
+// Uses the control's actual Companion UUID (companionId) as the controlId.
 async function pushRemoteConfig(config) {
   let ws
   try { ws = await getCompanionTRPC() } catch (_) { ws = null }
@@ -131,6 +134,7 @@ async function pushRemoteConfig(config) {
 
   for (const [bankKey, ctrl] of Object.entries(config.controls || {})) {
     if (ctrl.type !== 'button') continue
+    const controlId = ctrl.companionId || bankKey  // prefer actual Companion UUID
     for (const [stepId, step] of Object.entries(ctrl.steps || {})) {
       for (const [setId, actions] of Object.entries(step.action_sets || {})) {
         if (!Array.isArray(actions) || actions.length === 0) continue
@@ -139,7 +143,7 @@ async function pushRemoteConfig(config) {
           if (!action.connectionId || !action.definitionId) continue
           try {
             const newId = await trpcCall(ws, 'mutation', 'controls.entities.add', {
-              controlId: bankKey,
+              controlId,
               entityLocation,
               entityType: 'action',
               connectionId: action.connectionId,
@@ -148,7 +152,7 @@ async function pushRemoteConfig(config) {
             if (newId && action.options) {
               for (const [k, v] of Object.entries(action.options)) {
                 await trpcCall(ws, 'mutation', 'controls.entities.setOption', {
-                  controlId: bankKey,
+                  controlId,
                   entityLocation,
                   entityId: newId,
                   key: k,
@@ -775,32 +779,46 @@ app.whenReady().then(() => {
         const ws = await getCompanionTRPC()
         if (ws) {
           const data = await trpcSubscribeOnce(ws, 'pages.watch')
-          console.log('[remote] pages.watch raw:', JSON.stringify(data)?.slice(0, 300))
+          console.log('[remote] pages.watch raw:', JSON.stringify(data)?.slice(0, 500))
           if (data && typeof data === 'object') {
-            // Response may be { type: 'init', pages: {...} } or directly { "1": { name: ... }, ... }
-            const pageMap = data.pages ?? data.info?.pages ?? (data.type === 'init' ? data.info : null) ?? data
-            for (const [pageNum, info] of Object.entries(pageMap || {})) {
-              if (isNaN(Number(pageNum))) continue
-              pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
+            // Companion v5 format: { type:'init', order:[uuids], pages:{ uuid: { id, name, controls:{ row:{ col: controlId } } } } }
+            const pageOrder = data.order || Object.keys(data.pages || {})
+            const pageMap = data.pages || {}
+            for (let i = 0; i < pageOrder.length; i++) {
+              const pageId = pageOrder[i]
+              const page = pageMap[pageId]
+              if (!page) continue
+              const pageNum = i + 1  // 1-based sequential number for satellite
+              pages[pageNum] = { name: page.name || `Page ${pageNum}`, id: pageId }
+              // Build controls from page.controls[row][col] = companionControlId
+              for (const [rowStr, cols] of Object.entries(page.controls || {})) {
+                const row = parseInt(rowStr)
+                for (const [colStr, companionId] of Object.entries(cols || {})) {
+                  const col = parseInt(colStr)
+                  const slot = row * 8 + col + 1  // convert to 1-based slot
+                  const bankKey = `bank:${pageNum}-${slot}`
+                  controls[bankKey] = {
+                    type: 'button',
+                    companionId,  // actual Companion UUID-based control ID for tRPC
+                    style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' },
+                    steps: {}
+                  }
+                }
+              }
             }
             if (Object.keys(pages).length > 0)
-              console.log(`[remote] got ${Object.keys(pages).length} pages via tRPC pages.watch`)
+              console.log(`[remote] got ${Object.keys(pages).length} pages, ${Object.keys(controls).length} controls`)
           }
         }
       } catch (e) {
         console.warn(`[remote] tRPC pages.watch failed:`, e.message)
       }
 
-      // Default to pages 1–10 if we couldn't get the list
+      // If pages.watch gave us nothing, fall back to a single placeholder page
       if (Object.keys(pages).length === 0) {
-        for (let p = 1; p <= 10; p++) pages[p] = { name: `Page ${p}` }
-      }
-
-      // Create placeholder button controls for every slot on every page (8 cols × 9 rows = 72)
-      for (const pageNum of Object.keys(pages)) {
+        pages[1] = { name: 'Page 1' }
         for (let slot = 1; slot <= 72; slot++) {
-          const key = `bank:${pageNum}-${slot}`
-          controls[key] = { type: 'button', style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' }, steps: {} }
+          controls[`bank:1-${slot}`] = { type: 'button', style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' }, steps: {} }
         }
       }
 
