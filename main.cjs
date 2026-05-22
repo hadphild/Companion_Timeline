@@ -20,8 +20,27 @@ function writeSettings(patch) {
   _settingsCache = s
   if (patch.companionHost !== undefined || patch.companionPort !== undefined) { trpcWs = null }
 }
-function getCompanionHost() { return readSettings().companionHost || '127.0.0.1' }
-function getCompanionPort() { return readSettings().companionPort || 8000 }
+function parseHostPort(raw) {
+  const s = (raw || '127.0.0.1').trim()
+  const lastColon = s.lastIndexOf(':')
+  if (lastColon > 0) {
+    const maybePort = parseInt(s.slice(lastColon + 1), 10)
+    if (!isNaN(maybePort) && maybePort > 0 && maybePort < 65536) {
+      return { host: s.slice(0, lastColon), port: maybePort }
+    }
+  }
+  return { host: s, port: null }
+}
+function getCompanionHost() {
+  const s = readSettings()
+  return parseHostPort(s.companionHost).host
+}
+function getCompanionPort() {
+  const s = readSettings()
+  // Explicit port in settings takes priority, fall back to port embedded in host string
+  if (s.companionPort) return s.companionPort
+  return parseHostPort(s.companionHost).port || 8000
+}
 function isLocalHost(host) { return !host || host === '127.0.0.1' || host === 'localhost' }
 
 // ── Companion tRPC live-sync ──────────────────────────────────────────────────
