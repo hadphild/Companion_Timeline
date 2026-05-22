@@ -687,8 +687,8 @@ app.whenReady().then(() => {
         try {
           const ws = await getCompanionTRPC()
           if (ws) {
-            const data = await trpcSubscribeOnce(ws, 'connections.watch')
-            console.log('[library] connections.watch raw:', JSON.stringify(data)?.slice(0, 300))
+            const data = await trpcSubscribeOnce(ws, 'instances.connections.watch')
+            console.log('[library] instances.connections.watch raw:', JSON.stringify(data)?.slice(0, 300))
             // Handle { type: 'init', info: {...} } or data directly as a map
             const infoMap = (data?.type === 'init' && data.info) ? data.info : (typeof data === 'object' && data !== null && !data.type ? data : null)
             if (infoMap) {
