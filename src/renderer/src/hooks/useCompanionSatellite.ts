@@ -67,7 +67,8 @@ export interface SatelliteHandle {
 export function useCompanionSatellite(
   onConnect: () => void,
   onDisconnect: () => void,
-  host = '127.0.0.1'
+  host = '127.0.0.1',
+  port = 8000
 ): SatelliteHandle {
   const [isConnected, setIsConnected] = useState(false)
   const [subscriptionsEnabled, setSubscriptionsEnabled] = useState(false)
@@ -176,7 +177,7 @@ export function useCompanionSatellite(
       ws?.close()
       wsRef.current = null
     }
-  }, [host])
+  }, [host, port])
 
   const subscribeToPage = useCallback((bankKeys: string[]) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -213,7 +214,7 @@ export function useCompanionSatellite(
     if (!loc) return
     const [page, row, col] = loc.split('/')
     const endpoint = pressed ? 'down' : 'up'
-    fetch(`http://${host}:8000/api/location/${page}/${row}/${col}/${endpoint}`, { method: 'POST' })
+    fetch(`http://${host}:${port}/api/location/${page}/${row}/${col}/${endpoint}`, { method: 'POST' })
       .then(r => console.log('[satellite] press', endpoint, r.status))
       .catch(e => console.log('[satellite] press error', e.message))
   }, [host])

@@ -18,10 +18,10 @@ function writeSettings(patch) {
   const s = { ...readSettings(), ...patch }
   fs.writeFileSync(getSettingsPath(), JSON.stringify(s, null, 2))
   _settingsCache = s
-  // Reset tRPC connection so next call reconnects to the new host
-  if (patch.companionHost !== undefined) { trpcWs = null }
+  if (patch.companionHost !== undefined || patch.companionPort !== undefined) { trpcWs = null }
 }
 function getCompanionHost() { return readSettings().companionHost || '127.0.0.1' }
+function getCompanionPort() { return readSettings().companionPort || 8000 }
 function isLocalHost(host) { return !host || host === '127.0.0.1' || host === 'localhost' }
 
 // ── Companion tRPC live-sync ──────────────────────────────────────────────────
@@ -37,8 +37,9 @@ function getCompanionTRPC() {
     if (trpcWs && trpcWs.readyState === WebSocket.OPEN) return resolve(trpcWs)
 
     const host = getCompanionHost()
-    const ws = new WebSocket(`ws://${host}:8000/trpc`, {
-      headers: { Origin: `http://${host}:8000` },
+    const port = getCompanionPort()
+    const ws = new WebSocket(`ws://${host}:${port}/trpc`, {
+      headers: { Origin: `http://${host}:${port}` },
       handshakeTimeout: 3000
     })
     const done = (result) => {

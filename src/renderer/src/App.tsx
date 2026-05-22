@@ -54,6 +54,7 @@ export default function App() {
   const historyRef = useRef<CompanionConfig[]>([])
 
   const [companionHost, setCompanionHost] = useState('127.0.0.1')
+  const [companionPort, setCompanionPort] = useState(8000)
   const [showHostInput, setShowHostInput] = useState(false)
   const [hostDraft, setHostDraft] = useState('127.0.0.1')
 
@@ -61,8 +62,10 @@ export default function App() {
   useEffect(() => {
     window.api.getSettings().then(async (s: any) => {
       const h = s?.companionHost || '127.0.0.1'
+      const p = s?.companionPort || 8000
       setCompanionHost(h)
-      setHostDraft(h)
+      setCompanionPort(p)
+      setHostDraft(p === 8000 ? h : `${h}:${p}`)
       // loadFromCompanion now uses the correct host (just saved above)
       let result: any
       try { result = await window.api.loadFromCompanion() } catch (_) { result = { error: 'failed' } }
@@ -77,16 +80,28 @@ export default function App() {
     })
   }, [])
 
-  const applyHost = useCallback(async (host: string) => {
-    const h = host.trim() || '127.0.0.1'
-    setHostDraft(h)
+  const applyHost = useCallback(async (raw: string) => {
+    // Parse optional port from "host:port" format
+    const trimmed = raw.trim() || '127.0.0.1'
+    const lastColon = trimmed.lastIndexOf(':')
+    let host = trimmed
+    let port = 8000
+    if (lastColon > 0) {
+      const maybePort = parseInt(trimmed.slice(lastColon + 1), 10)
+      if (!isNaN(maybePort) && maybePort > 0 && maybePort < 65536) {
+        host = trimmed.slice(0, lastColon)
+        port = maybePort
+      }
+    }
+    const display = port === 8000 ? host : `${host}:${port}`
+    setHostDraft(display)
     setShowHostInput(false)
     setConfig(null)
     setFilePath(null)
     setIsLiveDb(false)
-    await window.api.setSettings({ companionHost: h })
-    setCompanionHost(h) // triggers satellite reconnect after settings saved
-    // Load config immediately — don't wait for satellite onConnect
+    await window.api.setSettings({ companionHost: host, companionPort: port })
+    setCompanionHost(host)
+    setCompanionPort(port)
     const result = await window.api.loadFromCompanion()
     if (!('error' in result)) {
       try { loadConfigRef.current(JSON.parse(result.content), result.filePath, true) } catch (_) {}
@@ -105,7 +120,8 @@ export default function App() {
       }
     }, []),
     useCallback(() => {}, []),
-    companionHost
+    companionHost,
+    companionPort
   )
 
   // Subscribe button grid to satellite when config, connection, or subscriptions change
@@ -768,7 +784,7 @@ export default function App() {
                 className="host-input"
                 value={hostDraft}
                 onChange={e => setHostDraft(e.target.value)}
-                placeholder="192.168.1.x"
+                placeholder="192.168.1.x or :8000"
                 autoFocus
                 onBlur={() => applyHost(hostDraft)}
                 onKeyDown={e => e.key === 'Escape' && setShowHostInput(false)}
@@ -777,10 +793,10 @@ export default function App() {
           ) : (
             <button
               className={`toolbar-btn host-btn ${companionHost !== '127.0.0.1' ? 'host-btn--remote' : ''}`}
-              onClick={() => { setHostDraft(companionHost); setShowHostInput(true) }}
-              title={`Companion host: ${companionHost} — click to change`}
+              onClick={() => setShowHostInput(true)}
+              title={`Companion host: ${hostDraft} — click to change`}
             >
-              {companionHost === '127.0.0.1' ? '⌂ Local' : `⇄ ${companionHost}`}
+              {companionHost === '127.0.0.1' ? '⌂ Local' : `⇄ ${hostDraft}`}
             </button>
           )}
           <button
