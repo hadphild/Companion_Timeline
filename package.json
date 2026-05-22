@@ -2,6 +2,10 @@
   "name": "companion-timeline",
   "version": "1.0.0",
   "description": "NLE-style timeline editor for Bitfocus Companion button actions",
+  "author": {
+    "name": "Phil Hadfield",
+    "email": "phil@atov.co.uk"
+  },
   "main": "main.cjs",
   "scripts": {
     "postinstall": "electron-rebuild -f -w better-sqlite3",
