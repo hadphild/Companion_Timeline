@@ -664,11 +664,43 @@ app.whenReady().then(() => {
     const host = getCompanionHost()
 
     if (!isLocalHost(host)) {
-      // Remote: return an empty config shell — satellite will show live states
-      // and tRPC will push edits to the remote host
+      // Remote: fetch page list from Companion HTTP API, build placeholder controls
+      // so the satellite hook can subscribe and show live button states.
+      const pages = {}
+      const controls = {}
+
+      try {
+        const resp = await fetch(`http://${host}:8000/api/pages`, { signal: AbortSignal.timeout(5000) })
+        if (resp.ok) {
+          const data = await resp.json()
+          // Companion v5 returns { pages: { "1": { name: "..." }, ... } }
+          // or just { "1": { name: "..." } } — handle both
+          const pageMap = data.pages ?? data
+          for (const [pageNum, info] of Object.entries(pageMap)) {
+            if (isNaN(Number(pageNum))) continue
+            pages[pageNum] = { name: (info && typeof info === 'object' && info.name) ? info.name : `Page ${pageNum}` }
+          }
+        }
+      } catch (e) {
+        console.warn(`[remote] could not fetch pages from ${host}:`, e.message)
+      }
+
+      // Default to pages 1–10 if we couldn't get the list
+      if (Object.keys(pages).length === 0) {
+        for (let p = 1; p <= 10; p++) pages[p] = { name: `Page ${p}` }
+      }
+
+      // Create placeholder button controls for every slot on every page (8 cols × 9 rows = 72)
+      for (const pageNum of Object.keys(pages)) {
+        for (let slot = 1; slot <= 72; slot++) {
+          const key = `bank:${pageNum}-${slot}`
+          controls[key] = { type: 'button', style: { text: '', bgcolor: 0, color: 0xffffff, size: 'auto' }, steps: {} }
+        }
+      }
+
       return {
         filePath: `remote://${host}`,
-        content: JSON.stringify({ _source: 'remote', host, pages: {}, controls: {} }),
+        content: JSON.stringify({ _source: 'remote', host, pages, controls }),
         isLiveDb: true,
         version: 5,
         isRemote: true,
@@ -740,6 +772,8 @@ app.whenReady().then(() => {
   ipcMain.handle('companion:saveSilent', async (_event, content) => {
     try {
       const config = JSON.parse(content)
+      // Remote configs skip SQLite — tRPC pushSyncToCompanion handles live sync
+      if (config._source === 'remote') return { ok: true }
       if (config._source !== 'v5sqlite') return { error: 'only v5sqlite supported' }
       isSaving = true
       const result = writeV5Database(config)
