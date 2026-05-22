@@ -57,68 +57,87 @@ export default function App() {
   const [companionPort, setCompanionPort] = useState(8000)
   const [showHostInput, setShowHostInput] = useState(false)
   const [hostDraft, setHostDraft] = useState('127.0.0.1')
+  const [recentConnections, setRecentConnections] = useState<{ host: string; port: number }[]>([])
+  const [connectDraft, setConnectDraft] = useState('')
+  const [connecting, setConnecting] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
 
-  // Load settings then config in sequence — ensures main process host matches renderer host
+  // Load settings on startup — do NOT auto-connect, show connection screen instead
   useEffect(() => {
-    window.api.getSettings().then(async (s: any) => {
+    window.api.getSettings().then((s: any) => {
       const h = s?.companionHost || '127.0.0.1'
       const p = s?.companionPort || 8000
       setCompanionHost(h)
       setCompanionPort(p)
       setHostDraft(p === 8000 ? h : `${h}:${p}`)
-      // loadFromCompanion now uses the correct host (just saved above)
-      let result: any
-      try { result = await window.api.loadFromCompanion() } catch (_) { result = { error: 'failed' } }
-      if (!('error' in result)) {
-        try { loadConfigRef.current(JSON.parse(result.content), result.filePath, true); return } catch (_) {}
-      }
-      // Fall back to last cached session
-      try {
-        const cached = localStorage.getItem('ct_last_config')
-        if (cached) { const { parsed, path, live } = JSON.parse(cached); loadConfigRef.current(parsed, path, live) }
-      } catch (_) {}
+      setRecentConnections(s?.recentConnections || [])
     })
   }, [])
 
-  const applyHost = useCallback(async (raw: string) => {
-    // Parse optional port from "host:port" format
+  const parseHostPort = (raw: string): { host: string; port: number } => {
     const trimmed = raw.trim() || '127.0.0.1'
     const lastColon = trimmed.lastIndexOf(':')
-    let host = trimmed
-    let port = 8000
     if (lastColon > 0) {
       const maybePort = parseInt(trimmed.slice(lastColon + 1), 10)
-      if (!isNaN(maybePort) && maybePort > 0 && maybePort < 65536) {
-        host = trimmed.slice(0, lastColon)
-        port = maybePort
-      }
+      if (!isNaN(maybePort) && maybePort > 0 && maybePort < 65536)
+        return { host: trimmed.slice(0, lastColon), port: maybePort }
     }
+    return { host: trimmed, port: 8000 }
+  }
+
+  const handleConnect = useCallback(async (host: string, port: number) => {
+    setConnectError(null)
+    setConnecting(true)
+    const display = port === 8000 ? host : `${host}:${port}`
+    setCompanionHost(host)
+    setCompanionPort(port)
+    setHostDraft(display)
+    await window.api.setSettings({ companionHost: host, companionPort: port })
+
+    // Add to recent (non-local only, deduplicated, max 8)
+    if (host !== '127.0.0.1' && host !== 'localhost') {
+      setRecentConnections(prev => {
+        const next = [{ host, port }, ...prev.filter(c => !(c.host === host && c.port === port))].slice(0, 8)
+        window.api.setSettings({ recentConnections: next })
+        return next
+      })
+    }
+
+    let result: any
+    try { result = await window.api.loadFromCompanion() } catch (e: any) { result = { error: String(e) } }
+    setConnecting(false)
+    if ('error' in result) { setConnectError(`Could not connect: ${result.error}`); return }
+    try { loadConfigRef.current(JSON.parse(result.content), result.filePath, true) }
+    catch (e) { setConnectError('Failed to parse config') }
+  }, [])
+
+  const removeRecent = useCallback((idx: number) => {
+    setRecentConnections(prev => {
+      const next = prev.filter((_, i) => i !== idx)
+      window.api.setSettings({ recentConnections: next })
+      return next
+    })
+  }, [])
+
+  const clearRecent = useCallback(() => {
+    setRecentConnections([])
+    window.api.setSettings({ recentConnections: [] })
+  }, [])
+
+  const applyHost = useCallback(async (raw: string) => {
+    const { host, port } = parseHostPort(raw)
     const display = port === 8000 ? host : `${host}:${port}`
     setHostDraft(display)
     setShowHostInput(false)
     setConfig(null)
     setFilePath(null)
     setIsLiveDb(false)
-    await window.api.setSettings({ companionHost: host, companionPort: port })
-    setCompanionHost(host)
-    setCompanionPort(port)
-    const result = await window.api.loadFromCompanion()
-    if (!('error' in result)) {
-      try { loadConfigRef.current(JSON.parse(result.content), result.filePath, true) } catch (_) {}
-    }
-  }, [])
+    await handleConnect(host, port)
+  }, [handleConnect])
 
   // Satellite API — live button bitmaps + Companion detection
   const satellite = useCompanionSatellite(
-    useCallback(async () => {
-      // Satellite connected — load config if not already loaded for this host
-      if (!configRef.current) {
-        const result = await window.api.loadFromCompanion()
-        if (!('error' in result)) {
-          try { loadConfigRef.current(JSON.parse(result.content), result.filePath, true) } catch (_) {}
-        }
-      }
-    }, []),
+    useCallback(() => {}, []),
     useCallback(() => {}, []),
     companionHost,
     companionPort
@@ -823,9 +842,9 @@ export default function App() {
           >
             ▶ Test
           </button>
-          {!isLiveDb && !satellite.isConnected && (
-            <button className="toolbar-btn toolbar-btn--companion" onClick={handleLoadFromCompanion}>
-              Load from Companion
+          {config && !isLiveDb && !satellite.isConnected && (
+            <button className="toolbar-btn toolbar-btn--companion" onClick={() => { setConfig(null); setConnectError(null) }}>
+              Change Connection
             </button>
           )}
           <button
@@ -843,13 +862,72 @@ export default function App() {
 
       {!config ? (
         <div className="welcome">
-          <div className="welcome-card">
+          <div className="welcome-card connection-card">
             <div className="welcome-icon">⏱</div>
             <h1>Companion Timeline</h1>
-            <p>Load your Companion setup directly, or open a <code>.companionconfig</code> export file.</p>
-            <button className="welcome-open-btn" onClick={handleLoadFromCompanion}>
-              Load from Companion
+            <p className="conn-subtitle">Choose a Companion to connect to:</p>
+
+            <button
+              className="conn-option conn-option--local"
+              onClick={() => handleConnect('127.0.0.1', 8000)}
+              disabled={connecting}
+            >
+              <span className="conn-option-icon">⌂</span>
+              <span className="conn-option-label">Local Companion</span>
+              <span className="conn-option-addr">127.0.0.1</span>
+              {satellite.isConnected && companionHost === '127.0.0.1' && (
+                <span className="conn-live-dot" title="Connected" />
+              )}
             </button>
+
+            {recentConnections.length > 0 && (
+              <>
+                <div className="conn-section-label">
+                  Recent
+                  <button className="conn-clear-btn" onClick={clearRecent}>Clear all</button>
+                </div>
+                {recentConnections.map((conn, i) => (
+                  <div key={i} className="conn-option-row">
+                    <button
+                      className="conn-option"
+                      onClick={() => handleConnect(conn.host, conn.port)}
+                      disabled={connecting}
+                    >
+                      <span className="conn-option-icon">⇄</span>
+                      <span className="conn-option-label">
+                        {conn.host}{conn.port !== 8000 ? `:${conn.port}` : ''}
+                      </span>
+                    </button>
+                    <button className="conn-remove-btn" onClick={() => removeRecent(i)} title="Remove">×</button>
+                  </div>
+                ))}
+              </>
+            )}
+
+            <div className="conn-section-label">Connect to address</div>
+            <form
+              className="conn-manual"
+              onSubmit={e => {
+                e.preventDefault()
+                const { host, port } = parseHostPort(connectDraft || '127.0.0.1')
+                handleConnect(host, port)
+              }}
+            >
+              <input
+                className="conn-input"
+                placeholder="192.168.1.x or 192.168.1.x:8000"
+                value={connectDraft}
+                onChange={e => setConnectDraft(e.target.value)}
+                disabled={connecting}
+              />
+              <button type="submit" className="conn-go-btn" disabled={connecting || !connectDraft.trim()}>
+                {connecting ? '…' : 'Connect'}
+              </button>
+            </form>
+
+            {connectError && <div className="conn-error">{connectError}</div>}
+
+            <div className="conn-divider" />
             <button className="welcome-open-btn welcome-open-btn--secondary" onClick={handleOpen}>
               Open Config File…
             </button>

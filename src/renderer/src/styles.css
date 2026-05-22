@@ -238,6 +238,81 @@ html, body, #root {
   padding: 48px;
 }
 
+/* Connection picker */
+.connection-card {
+  text-align: left;
+  max-width: 420px;
+  padding: 40px 44px;
+}
+.connection-card h1 { text-align: center; }
+.conn-subtitle { text-align: center; color: var(--text2); margin-bottom: 20px !important; }
+.conn-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 16px 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.conn-clear-btn {
+  background: none; border: none; color: var(--text3); cursor: pointer;
+  font-size: 10px; padding: 0; text-transform: none; letter-spacing: 0;
+}
+.conn-clear-btn:hover { color: #f87171; }
+
+.conn-option {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 7px; padding: 10px 14px; cursor: pointer;
+  color: var(--text); font-size: 13px; text-align: left;
+  transition: background 0.1s, border-color 0.1s;
+}
+.conn-option:hover:not(:disabled) { background: var(--bg4); border-color: var(--accent); }
+.conn-option:disabled { opacity: 0.5; cursor: default; }
+.conn-option--local { margin-bottom: 4px; }
+.conn-option-icon { font-size: 16px; flex-shrink: 0; }
+.conn-option-label { flex: 1; font-weight: 500; }
+.conn-option-addr { font-size: 11px; color: var(--text3); font-family: monospace; }
+.conn-live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+  box-shadow: 0 0 5px var(--accent);
+}
+
+.conn-option-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.conn-option-row .conn-option { flex: 1; margin-bottom: 0; }
+.conn-remove-btn {
+  background: none; border: none; color: var(--text3); cursor: pointer;
+  font-size: 16px; padding: 4px 8px; border-radius: 4px; flex-shrink: 0;
+  line-height: 1;
+}
+.conn-remove-btn:hover { background: var(--bg3); color: #f87171; }
+
+.conn-manual { display: flex; gap: 6px; margin-top: 4px; }
+.conn-input {
+  flex: 1; background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 6px; color: var(--text); font-size: 13px;
+  padding: 8px 12px; outline: none; font-family: monospace;
+}
+.conn-input:focus { border-color: var(--accent); }
+.conn-go-btn {
+  background: var(--accent); color: #000; border: none; border-radius: 6px;
+  padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+  white-space: nowrap;
+}
+.conn-go-btn:hover:not(:disabled) { background: var(--accent2); }
+.conn-go-btn:disabled { opacity: 0.4; cursor: default; }
+
+.conn-error {
+  margin-top: 10px; padding: 8px 12px; background: rgba(248,113,113,0.1);
+  border: 1px solid rgba(248,113,113,0.3); border-radius: 6px;
+  color: #f87171; font-size: 12px;
+}
+.conn-divider { border: none; border-top: 1px solid var(--border); margin: 20px 0 0; }
+
 .welcome-icon {
   font-size: 56px;
   margin-bottom: 16px;
