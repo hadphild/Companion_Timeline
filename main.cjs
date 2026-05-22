@@ -122,6 +122,49 @@ function trpcSubscribeOnce(ws, path, input = {}, timeoutMs = 5000) {
   })
 }
 
+// Push a remote config's actions to Companion via tRPC.
+// Uses the bank key directly as the controlId (Companion v5 accepts location-based IDs).
+async function pushRemoteConfig(config) {
+  let ws
+  try { ws = await getCompanionTRPC() } catch (_) { ws = null }
+  if (!ws) return
+
+  for (const [bankKey, ctrl] of Object.entries(config.controls || {})) {
+    if (ctrl.type !== 'button') continue
+    for (const [stepId, step] of Object.entries(ctrl.steps || {})) {
+      for (const [setId, actions] of Object.entries(step.action_sets || {})) {
+        if (!Array.isArray(actions) || actions.length === 0) continue
+        const entityLocation = { stepId, setId: normaliseSetId(setId) }
+        for (const action of actions) {
+          if (!action.connectionId || !action.definitionId) continue
+          try {
+            const newId = await trpcCall(ws, 'mutation', 'controls.entities.add', {
+              controlId: bankKey,
+              entityLocation,
+              entityType: 'action',
+              connectionId: action.connectionId,
+              actionId: action.definitionId,
+            })
+            if (newId && action.options) {
+              for (const [k, v] of Object.entries(action.options)) {
+                await trpcCall(ws, 'mutation', 'controls.entities.setOption', {
+                  controlId: bankKey,
+                  entityLocation,
+                  entityId: newId,
+                  key: k,
+                  value: wrapOptionValue(v),
+                })
+              }
+            }
+          } catch (e) {
+            console.warn(`[remote-sync] failed to push action ${action.definitionId}:`, e.message)
+          }
+        }
+      }
+    }
+  }
+}
+
 // Wrap an option value in Companion v5 format
 function wrapOptionValue(v) {
   return { value: String(v ?? ''), isExpression: false }
@@ -753,7 +796,7 @@ app.whenReady().then(() => {
       for (const pageNum of Object.keys(pages)) {
         for (let slot = 1; slot <= 72; slot++) {
           const key = `bank:${pageNum}-${slot}`
-          controls[key] = { type: 'button', style: { text: '', bgcolor: 0, color: 0xffffff, size: 'auto' }, steps: {} }
+          controls[key] = { type: 'button', style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' }, steps: {} }
         }
       }
 
@@ -831,8 +874,12 @@ app.whenReady().then(() => {
   ipcMain.handle('companion:saveSilent', async (_event, content) => {
     try {
       const config = JSON.parse(content)
-      // Remote configs skip SQLite — tRPC pushSyncToCompanion handles live sync
-      if (config._source === 'remote') return { ok: true }
+      if (config._source === 'remote') {
+        // For remote configs push each changed button directly via tRPC.
+        // We use the bank key as the controlId and rebuild all entities for changed buttons.
+        pushRemoteConfig(config).catch(e => console.error('[remote-sync]', e.message))
+        return { ok: true }
+      }
       if (config._source !== 'v5sqlite') return { error: 'only v5sqlite supported' }
       isSaving = true
       const result = writeV5Database(config)

@@ -804,30 +804,13 @@ export default function App() {
           <span className="app-version" title={`Built ${__BUILD_DATE__}`}>v{__APP_VERSION__} · build {__BUILD_NUMBER__}</span>
         </div>
         <div className="titlebar-actions">
-          {showHostInput ? (
-            <form
-              className="host-input-form"
-              onSubmit={e => { e.preventDefault(); applyHost(hostDraft) }}
-            >
-              <input
-                className="host-input"
-                value={hostDraft}
-                onChange={e => setHostDraft(e.target.value)}
-                placeholder="192.168.1.x or :8000"
-                autoFocus
-                onBlur={() => applyHost(hostDraft)}
-                onKeyDown={e => e.key === 'Escape' && setShowHostInput(false)}
-              />
-            </form>
-          ) : (
-            <button
-              className={`toolbar-btn host-btn ${companionHost !== '127.0.0.1' ? 'host-btn--remote' : ''}`}
-              onClick={() => setShowHostInput(true)}
-              title={`Companion host: ${hostDraft} — click to change`}
-            >
-              {companionHost === '127.0.0.1' ? '⌂ Local' : `⇄ ${hostDraft}`}
-            </button>
-          )}
+          <button
+            className={`toolbar-btn host-btn ${companionHost !== '127.0.0.1' ? 'host-btn--remote' : ''}`}
+            onClick={() => { setConfig(null); setConnectError(null) }}
+            title={`Connected to ${hostDraft} — click to change`}
+          >
+            {companionHost === '127.0.0.1' ? '⌂ Local' : `⇄ ${hostDraft}`}
+          </button>
           <button
             className="toolbar-btn"
             onClick={handleStop}
@@ -852,11 +835,6 @@ export default function App() {
           >
             ▶ Test
           </button>
-          {config && !isLiveDb && !satellite.isConnected && (
-            <button className="toolbar-btn toolbar-btn--companion" onClick={() => { setConfig(null); setConnectError(null) }}>
-              Change Connection
-            </button>
-          )}
           <button
             className={`toolbar-btn ${showLibrary ? 'toolbar-btn--active' : ''}`}
             onClick={() => setShowLibrary(v => !v)}
