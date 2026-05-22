@@ -57,12 +57,23 @@ export default function App() {
   const [showHostInput, setShowHostInput] = useState(false)
   const [hostDraft, setHostDraft] = useState('127.0.0.1')
 
-  // Load persisted host setting on startup
+  // Load settings then config in sequence — ensures main process host matches renderer host
   useEffect(() => {
-    window.api.getSettings().then((s: any) => {
+    window.api.getSettings().then(async (s: any) => {
       const h = s?.companionHost || '127.0.0.1'
       setCompanionHost(h)
       setHostDraft(h)
+      // loadFromCompanion now uses the correct host (just saved above)
+      let result: any
+      try { result = await window.api.loadFromCompanion() } catch (_) { result = { error: 'failed' } }
+      if (!('error' in result)) {
+        try { loadConfigRef.current(JSON.parse(result.content), result.filePath, true); return } catch (_) {}
+      }
+      // Fall back to last cached session
+      try {
+        const cached = localStorage.getItem('ct_last_config')
+        if (cached) { const { parsed, path, live } = JSON.parse(cached); loadConfigRef.current(parsed, path, live) }
+      } catch (_) {}
     })
   }, [])
 
@@ -138,35 +149,6 @@ export default function App() {
   }, [])
   useEffect(() => { loadConfigRef.current = loadConfig }, [loadConfig])
 
-  // On startup: try to reload from Companion live, fall back to cached config
-  useEffect(() => {
-    window.api.loadFromCompanion().then(result => {
-      if (!('error' in result)) {
-        try {
-          const parsed: CompanionConfig = JSON.parse(result.content)
-          loadConfig(parsed, result.filePath, true)
-          return
-        } catch (_) {}
-      }
-      // Companion not available — restore last session from cache
-      try {
-        const cached = localStorage.getItem('ct_last_config')
-        if (cached) {
-          const { parsed, path, live } = JSON.parse(cached)
-          loadConfig(parsed, path, live)
-        }
-      } catch (_) {}
-    }).catch(() => {
-      try {
-        const cached = localStorage.getItem('ct_last_config')
-        if (cached) {
-          const { parsed, path, live } = JSON.parse(cached)
-          loadConfig(parsed, path, live)
-        }
-      } catch (_) {}
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   // Subscribe to live Companion change events from the main process
   useEffect(() => {
