@@ -9,9 +9,9 @@
     "prebuild": "node scripts/bump-build.cjs",
     "build": "vite build",
     "start": "env -u ELECTRON_RUN_AS_NODE node .electron-runner/node_modules/electron/cli.js main.cjs",
-    "package": "vite build && electron-builder --mac",
-    "package:win": "vite build && electron-builder --win",
-    "package:linux": "vite build && electron-builder --linux",
+    "package": "vite build && electron-builder --mac --publish never",
+    "package:win": "vite build && electron-builder --win --publish never",
+    "package:linux": "vite build && electron-builder --linux --publish never",
     "release:patch": "npm version patch && npm run package",
     "release:minor": "npm version minor && npm run package",
     "release:major": "npm version major && npm run package"
