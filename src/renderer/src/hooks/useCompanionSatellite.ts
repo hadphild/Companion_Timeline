@@ -111,6 +111,12 @@ export function useCompanionSatellite(
           const msg = parseMessage(line)
           if (!msg) continue
 
+          if (msg.cmd === 'PING') {
+            // Must respond immediately or server closes the connection after ~2s
+            const payload = line.trim().slice(4).trim()
+            ws.send(`PONG ${payload}\n`)
+          }
+
           if (msg.cmd === 'BEGIN') {
             console.log('[satellite] connected! version:', msg.args['CompanionVersion'])
             setIsConnected(true)
