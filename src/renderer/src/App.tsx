@@ -419,7 +419,7 @@ export default function App() {
         options: (template.options as Record<string, unknown>) ?? {}
       }
       updateButton(selectedButtonKey, (ctrl) => {
-        const s = ctrl.steps[stepKey]
+        const s = ctrl.steps[stepKey] ?? { action_sets: {} }
         return {
           ...ctrl,
           steps: {

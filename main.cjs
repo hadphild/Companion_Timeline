@@ -812,7 +812,9 @@ app.whenReady().then(() => {
                     type: 'button',
                     companionId,  // actual Companion UUID-based control ID for tRPC
                     style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' },
-                    steps: {}
+                    steps: {
+                      'step:0': { action_sets: { down: [], '0': [] } }
+                    }
                   }
                 }
               }
@@ -829,7 +831,7 @@ app.whenReady().then(() => {
       if (Object.keys(pages).length === 0) {
         pages[1] = { name: 'Page 1' }
         for (let slot = 1; slot <= 72; slot++) {
-          controls[`bank:1-${slot}`] = { type: 'button', style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' }, steps: {} }
+          controls[`bank:1-${slot}`] = { type: 'button', style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' }, steps: { 'step:0': { action_sets: { down: [], '0': [] } } } }
         }
       }
 
