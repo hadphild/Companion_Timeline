@@ -776,6 +776,30 @@ html, body, #root {
   white-space: pre-line;
 }
 
+.button-header-text--editable {
+  cursor: text;
+  border-radius: 3px;
+  padding: 2px 5px;
+  margin: -2px -5px;
+  transition: background 0.1s;
+}
+.button-header-text--editable:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+.button-header-label-input {
+  font-size: 13px;
+  font-weight: 500;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.4);
+  border-radius: 3px;
+  color: inherit;
+  padding: 2px 6px;
+  outline: none;
+  flex: 1;
+  min-width: 0;
+}
+
 .no-selection {
   flex: 1;
   display: flex;

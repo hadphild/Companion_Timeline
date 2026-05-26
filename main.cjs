@@ -2,8 +2,14 @@ const { app, shell, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const crypto = require('crypto')
 const Database = require('better-sqlite3')
 const WebSocket = require('ws')
+
+// Generate a URL-safe random ID in the style Companion v5 uses (nanoid-compatible)
+function generateId() {
+  return crypto.randomBytes(15).toString('base64url')
+}
 
 // ── Settings store ────────────────────────────────────────────────────────────
 
@@ -86,6 +92,7 @@ function trpcCall(ws, method, path, input) {
         if (msg.id !== id) return
         clearTimeout(timeout)
         ws.off('message', handler)
+        if (msg.error) console.warn(`[tRPC] ${path} error:`, JSON.stringify(msg.error).slice(0, 200))
         resolve(msg.result?.data ?? null)
       } catch (_) {}
     }
@@ -135,10 +142,23 @@ async function pushRemoteConfig(config) {
   for (const [bankKey, ctrl] of Object.entries(config.controls || {})) {
     if (ctrl.type !== 'button') continue
     const controlId = ctrl.companionId || bankKey  // prefer actual Companion UUID
+
+    // Push label change if present
+    if (ctrl.style?.text !== undefined) {
+      try {
+        await trpcCall(ws, 'mutation', 'controls.styleSetFields', {
+          controlId,
+          styleFields: { text: ctrl.style.text }
+        })
+      } catch (e) {
+        console.warn(`[remote-sync] styleSetFields failed for ${controlId}:`, e.message)
+      }
+    }
     for (const [stepId, step] of Object.entries(ctrl.steps || {})) {
       for (const [setId, actions] of Object.entries(step.action_sets || {})) {
         if (!Array.isArray(actions) || actions.length === 0) continue
-        const entityLocation = { stepId, setId: normaliseSetId(setId) }
+        const companionStepId = String(stepId).replace(/^step:/, '')
+        const entityLocation = { stepId: companionStepId, setId: normaliseSetId(setId) }
         for (const action of actions) {
           if (!action.connectionId || !action.definitionId) continue
           try {
@@ -181,7 +201,11 @@ function normaliseSetId(setId) {
 }
 
 async function pushSyncToCompanion(syncEntries) {
-  // syncEntries: [{ controlId, stepId, setId, oldEntityIds, newEntities }]
+  await pushSyncToCompanionWithIdMap(syncEntries)
+}
+
+async function pushSyncToCompanionWithIdMap(syncEntries) {
+  // syncEntries: [{ controlId, stepId, setId, oldEntityIds, newEntities, _newControl?, _location? }]
   let ws
   try { ws = await getCompanionTRPC() } catch (_) { ws = null }
   if (!ws) {
@@ -189,10 +213,51 @@ async function pushSyncToCompanion(syncEntries) {
     return
   }
 
+  // For brand-new controls: use controls.resetControl to create the button in Companion's
+  // live runtime (so the web UI sees it immediately), then let the entity-add below populate it.
+  const newControlIds = new Set()
+  for (const entry of syncEntries) {
+    if (!entry._newControl || newControlIds.has(entry.controlId)) continue
+    newControlIds.add(entry.controlId)
+    const loc = entry._location  // { pageNumber, row, column }
+    if (loc) {
+      console.log(`[CT] creating button via tRPC at page ${loc.pageNumber} row ${loc.row} col ${loc.column}`)
+      const r = await trpcCall(ws, 'mutation', 'controls.resetControl', { location: loc, newType: 'button-layered' })
+      console.log(`[CT] resetControl result:`, JSON.stringify(r))
+      // Companion creates the button at the location, but assigns a NEW UUID.
+      // We need to find out what UUID it assigned so we can add entities to it.
+      // Query the pages to get the actual controlId at that location.
+    }
+  }
+
+  // After creating new controls, re-query pages to get the real Companion-assigned IDs.
+  const controlIdMap = new Map()
+  const newEntries = syncEntries.filter(e => e._newControl && e._location)
+  if (newEntries.length > 0) {
+    const data = await trpcSubscribeOnce(ws, 'pages.watch')
+    if (data?.pages) {
+      const pageOrder = data.order || Object.keys(data.pages)
+      for (const entry of newEntries) {
+        if (controlIdMap.has(entry.controlId)) continue
+        const loc = entry._location
+        const pageId = pageOrder[loc.pageNumber - 1]
+        const companionId = data.pages[pageId]?.controls?.[loc.row]?.[loc.column]
+        if (companionId) {
+          controlIdMap.set(entry.controlId, companionId)
+          console.log(`[CT] mapped temp ${entry.controlId} → Companion ${companionId}`)
+        }
+      }
+    }
+  }
+
   let sets = 0, added = 0, failed = 0
 
-  for (const { controlId, stepId, setId, oldEntityIds, newEntities } of syncEntries) {
-    const entityLocation = { stepId, setId: normaliseSetId(setId) }
+  for (const { controlId: rawId, stepId, setId, oldEntityIds, newEntities } of syncEntries) {
+    // Use the real Companion-assigned ID for new controls
+    const controlId = controlIdMap.get(rawId) ?? rawId
+    // Companion v5 uses numeric step keys like '0', not 'step:0'
+    const companionStepId = String(stepId).replace(/^step:/, '')
+    const entityLocation = { stepId: companionStepId, setId: normaliseSetId(setId) }
 
     // Remove all old entities from Companion's memory
     for (const entityId of oldEntityIds) {
@@ -225,6 +290,7 @@ async function pushSyncToCompanion(syncEntries) {
   } else {
     console.log(`[CT] tRPC sync complete — ${sets} action set(s), ${added} entity/ies pushed live`)
   }
+  return controlIdMap
 }
 
 function sqliteQuery(dbPath, sql) {
@@ -258,6 +324,20 @@ function readV5Database() {
   const rawControls  = sqliteQuery(COMPANION_V5_DB, 'SELECT id, value FROM controls')
   const rawPages     = sqliteQuery(COMPANION_V5_DB, 'SELECT id, value FROM pages')
   const rawInstances = sqliteQuery(COMPANION_V5_DB, 'SELECT id, value FROM instances')
+  const rawSurfaces  = sqliteQuery(COMPANION_V5_DB, 'SELECT id, value FROM surfaces')
+
+  // Determine grid size from first emulator/physical surface that has gridSize
+  let gridCols = 8, gridRows = 4
+  for (const row of rawSurfaces) {
+    try {
+      const s = JSON.parse(row.value)
+      if (s.gridSize?.columns && s.gridSize?.rows) {
+        gridCols = s.gridSize.columns
+        gridRows = s.gridSize.rows
+        break
+      }
+    } catch {}
+  }
 
   {
 
@@ -274,14 +354,14 @@ function readV5Database() {
     for (const row of rawPages) {
       const pg = JSON.parse(row.value)
       const pageNum = parseInt(row.id) // pages table id is 1, 2, 3 ...
-      pageInfo[pageNum] = { name: pg.name || `Page ${pageNum}` }
+      pageInfo[pageNum] = { name: pg.name || `Page ${pageNum}`, id: pg.id }
 
       const grid = pg.controls || {}
       for (const [rowStr, cols] of Object.entries(grid)) {
         const r = parseInt(rowStr)
         for (const [colStr, bankId] of Object.entries(cols)) {
           const c = parseInt(colStr)
-          const slot = r * 8 + c + 1  // convert row/col to 1-based slot
+          const slot = r * gridCols + c + 1  // convert row/col to 1-based slot
           const syntheticKey = `bank:${pageNum}-${slot}`
           const ctrl = controlsMap[bankId]
           if (!ctrl) continue
@@ -335,6 +415,22 @@ function readV5Database() {
           }
         }
       }
+
+      // Fill every slot in the grid so the sidebar shows the full layout
+      const totalSlots = gridCols * gridRows
+      for (let s = 1; s <= totalSlots; s++) {
+        const k = `bank:${pageNum}-${s}`
+        if (!controls[k]) {
+          controls[k] = {
+            type: 'button',
+            style: { text: '', color: 0x555555, bgcolor: 0x1a1a2e, size: 'auto' },
+            options: { relativeDelay: false, stepAutoProgress: true },
+            feedbacks: [],
+            steps: { 'step:0': { action_sets: { down: [], '0': [] }, options: {} } },
+            _empty: true
+          }
+        }
+      }
     }
 
     // Build instances map (only connection-type instances)
@@ -356,6 +452,7 @@ function readV5Database() {
       controls,
       page: pageInfo,
       instances,
+      gridSize: { columns: gridCols, rows: gridRows },
       _source: 'v5sqlite'
     }
   }
@@ -472,14 +569,93 @@ function writeV5Database(config) {
     const currentRaw = {}
     for (const row of rows) currentRaw[row.id] = JSON.parse(row.value)
 
+    const pageRows = sqliteQuery(COMPANION_V5_DB, 'SELECT id, value FROM pages')
+    const currentPages = {}
+    for (const row of pageRows) currentPages[row.id] = JSON.parse(row.value)
+
+    const gridCols = config.gridSize?.columns ?? 8
+
     // Collect sync info: old entity IDs (to remove) + new entities (to add)
     const syncEntries = []
+    // Map of bankKey → new _v5id for buttons created this save
+    const createdButtons = {}
 
     sqliteWrite(COMPANION_V5_DB, (db) => {
       const update = db.prepare('UPDATE controls SET value = ? WHERE id = ?')
+      const insert = db.prepare('INSERT INTO controls (id, value) VALUES (?, ?)')
+      const updatePage = db.prepare('UPDATE pages SET value = ? WHERE id = ?')
+
       const run = db.transaction(() => {
-        for (const [, ctrl] of Object.entries(config.controls)) {
-          if (ctrl.type !== 'button' || !ctrl._v5id) continue
+        for (const [bankKey, ctrl] of Object.entries(config.controls)) {
+          if (ctrl.type !== 'button') continue
+
+          // ── NEW button: no _v5id, must INSERT ─────────────────────────────
+          if (!ctrl._v5id) {
+            const hasActions = Object.values(ctrl.steps || {}).some(s =>
+              Object.values(s.action_sets || {}).some(acts => acts && acts.length > 0)
+            )
+            const hasLabel = ctrl.style?.text?.trim()
+            console.log(`[writeV5] new button ${bankKey}: hasActions=${hasActions}, hasLabel=${!!hasLabel}`)
+          if (!hasActions && !hasLabel) continue  // genuinely empty, skip
+
+            const m = bankKey.match(/^bank:(\d+)-(\d+)$/)
+            if (!m) continue
+            const pageNum = parseInt(m[1])
+            const slot    = parseInt(m[2])
+            const row     = Math.floor((slot - 1) / gridCols)
+            const col     = (slot - 1) % gridCols
+
+            const newId   = `bank:${generateId()}`
+
+            // Build Companion v5 button record
+            const labelText = ctrl.style?.text ?? ''
+            const newSteps = {}
+            for (const [stepKey, step] of Object.entries(ctrl.steps || {})) {
+              const actionSets = {}
+              for (const [trigger, actions] of Object.entries(step.action_sets || {})) {
+                const newEntities = processActionsToCompanion(actions || [])
+                actionSets[trigger] = newEntities
+                if (newEntities.length > 0) {
+                  syncEntries.push({
+                    controlId: newId, stepId: stepKey, setId: trigger,
+                    oldEntityIds: [], newEntities,
+                    _newControl: true,
+                    _location: { pageNumber: pageNum, row, column: col }
+                  })
+                }
+              }
+              newSteps[stepKey] = { action_sets: actionSets, options: step.options || {} }
+            }
+
+            const newRecord = {
+              type: 'button',
+              style: {
+                layers: [
+                  { type: 'box',  color:  { value: ctrl.style?.bgcolor ?? 0, isExpression: false }, enabled: true },
+                  { type: 'text', text:   { value: labelText, isExpression: false }, enabled: true, size: 'auto', alignment: 'center:center', font: 'auto' }
+                ]
+              },
+              steps: newSteps,
+              feedbacks: [],
+              options: { relativeDelay: false, stepAutoProgress: true }
+            }
+            insert.run(newId, JSON.stringify(newRecord))
+
+            // Update the page's controls grid
+            const pageJson = currentPages[String(pageNum)]
+            if (pageJson) {
+              if (!pageJson.controls) pageJson.controls = {}
+              if (!pageJson.controls[row]) pageJson.controls[row] = {}
+              pageJson.controls[row][col] = newId
+              updatePage.run(JSON.stringify(pageJson), String(pageNum))
+            }
+
+            console.log(`[writeV5] created ${bankKey} → ${newId}, page ${pageNum} row ${row} col ${col}`)
+            createdButtons[bankKey] = newId
+            continue
+          }
+
+          // ── EXISTING button: UPDATE ────────────────────────────────────────
           const raw = currentRaw[ctrl._v5id]
           if (!raw) continue
 
@@ -505,13 +681,25 @@ function writeV5Database(config) {
             }
           }
 
-          update.run(JSON.stringify({ ...raw, steps: newSteps }), ctrl._v5id)
+          // Also update the text layer if the label changed
+          let updatedStyle = raw.style
+          if (ctrl.style?.text !== undefined) {
+            const layers = (raw.style?.layers || []).map(l => {
+              if (l.type !== 'text') return l
+              return { ...l, text: { ...(l.text || {}), value: ctrl.style.text } }
+            })
+            if (!layers.some(l => l.type === 'text') && ctrl.style.text) {
+              layers.push({ type: 'text', text: { value: ctrl.style.text, isExpression: false }, enabled: true })
+            }
+            updatedStyle = { ...raw.style, layers }
+          }
+          update.run(JSON.stringify({ ...raw, steps: newSteps, style: updatedStyle }), ctrl._v5id)
         }
       })
       run()
     })
 
-    return { ok: true, syncEntries }
+    return { ok: true, syncEntries, createdButtons }
   } catch (e) {
     return { error: e.message }
   }
@@ -783,6 +971,7 @@ app.whenReady().then(() => {
       // so the satellite hook can subscribe and show live button states.
       const pages = {}
       const controls = {}
+      let gridCols = 8, gridRows = 4
 
       // Companion v5 procedure: pages.watch
       // First event contains page definitions
@@ -795,32 +984,61 @@ app.whenReady().then(() => {
             // Companion v5 format: { type:'init', order:[uuids], pages:{ uuid: { id, name, controls:{ row:{ col: controlId } } } } }
             const pageOrder = data.order || Object.keys(data.pages || {})
             const pageMap = data.pages || {}
+            let maxRow = 3, maxCol = 7  // min 4 rows × 8 cols
+
+            // First pass: detect actual grid dimensions
+            for (const pageId of pageOrder) {
+              const page = pageMap[pageId]
+              if (!page) continue
+              for (const [rowStr, cols] of Object.entries(page.controls || {})) {
+                maxRow = Math.max(maxRow, parseInt(rowStr))
+                for (const colStr of Object.keys(cols || {})) {
+                  maxCol = Math.max(maxCol, parseInt(colStr))
+                }
+              }
+            }
+            gridCols = maxCol + 1
+            gridRows = maxRow + 1
+
+            // Second pass: build controls and fill all slots
             for (let i = 0; i < pageOrder.length; i++) {
               const pageId = pageOrder[i]
               const page = pageMap[pageId]
               if (!page) continue
               const pageNum = i + 1  // 1-based sequential number for satellite
               pages[pageNum] = { name: page.name || `Page ${pageNum}`, id: pageId }
+
               // Build controls from page.controls[row][col] = companionControlId
               for (const [rowStr, cols] of Object.entries(page.controls || {})) {
                 const row = parseInt(rowStr)
                 for (const [colStr, companionId] of Object.entries(cols || {})) {
                   const col = parseInt(colStr)
-                  const slot = row * 8 + col + 1  // convert to 1-based slot
+                  const slot = row * gridCols + col + 1
                   const bankKey = `bank:${pageNum}-${slot}`
                   controls[bankKey] = {
                     type: 'button',
                     companionId,  // actual Companion UUID-based control ID for tRPC
                     style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' },
-                    steps: {
-                      'step:0': { action_sets: { down: [], '0': [] } }
-                    }
+                    steps: { 'step:0': { action_sets: { down: [], '0': [] } } }
+                  }
+                }
+              }
+
+              // Fill empty slots
+              for (let s = 1; s <= gridCols * gridRows; s++) {
+                const k = `bank:${pageNum}-${s}`
+                if (!controls[k]) {
+                  controls[k] = {
+                    type: 'button',
+                    style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' },
+                    steps: { 'step:0': { action_sets: { down: [], '0': [] } } },
+                    _empty: true
                   }
                 }
               }
             }
             if (Object.keys(pages).length > 0)
-              console.log(`[remote] got ${Object.keys(pages).length} pages, ${Object.keys(controls).length} controls`)
+              console.log(`[remote] got ${Object.keys(pages).length} pages, ${Object.keys(controls).length} controls, grid ${gridCols}x${gridRows}`)
           }
         }
       } catch (e) {
@@ -830,14 +1048,17 @@ app.whenReady().then(() => {
       // If pages.watch gave us nothing, fall back to a single placeholder page
       if (Object.keys(pages).length === 0) {
         pages[1] = { name: 'Page 1' }
-        for (let slot = 1; slot <= 72; slot++) {
-          controls[`bank:1-${slot}`] = { type: 'button', style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' }, steps: { 'step:0': { action_sets: { down: [], '0': [] } } } }
+        for (let r = 0; r < gridRows; r++) {
+          for (let c = 0; c < gridCols; c++) {
+            const slot = r * gridCols + c + 1
+            controls[`bank:1-${slot}`] = { type: 'button', style: { text: '', bgcolor: 0x1a1a2e, color: 0x555555, size: 'auto' }, steps: { 'step:0': { action_sets: { down: [], '0': [] } } }, _empty: true }
+          }
         }
       }
 
       return {
         filePath: `remote://${host}`,
-        content: JSON.stringify({ _source: 'remote', host, pages, controls }),
+        content: JSON.stringify({ _source: 'remote', host, pages, controls, gridSize: { columns: gridCols, rows: gridRows } }),
         isLiveDb: true,
         version: 5,
         isRemote: true,
@@ -909,21 +1130,38 @@ app.whenReady().then(() => {
   ipcMain.handle('companion:saveSilent', async (_event, content) => {
     try {
       const config = JSON.parse(content)
+      console.log('[saveSilent] _source:', config._source)
       if (config._source === 'remote') {
-        // For remote configs push each changed button directly via tRPC.
-        // We use the bank key as the controlId and rebuild all entities for changed buttons.
         pushRemoteConfig(config).catch(e => console.error('[remote-sync]', e.message))
         return { ok: true }
       }
-      if (config._source !== 'v5sqlite') return { error: 'only v5sqlite supported' }
+      if (config._source !== 'v5sqlite') {
+        console.log('[saveSilent] skipping — not v5sqlite')
+        return { error: 'only v5sqlite supported' }
+      }
       isSaving = true
       const result = writeV5Database(config)
+      console.log('[saveSilent] writeV5Database result:', JSON.stringify({ ok: result.ok, error: result.error, created: Object.keys(result.createdButtons || {}), syncEntries: result.syncEntries?.length }))
       if (fs.existsSync(COMPANION_V5_DB)) lastMtime = fs.statSync(COMPANION_V5_DB).mtimeMs
       setTimeout(() => { isSaving = false }, 3000)
-      if (result.ok) pushSyncToCompanion(result.syncEntries).catch(e => console.error('[sync]', e.message))
+      if (result.ok) {
+        const hasNew = result.syncEntries?.some(e => e._newControl)
+        if (hasNew) {
+          // Await tRPC sync so we can return the real Companion-assigned IDs
+          const idMap = await pushSyncToCompanionWithIdMap(result.syncEntries)
+          // Remap createdButtons to the Companion-assigned IDs
+          const remapped = {}
+          for (const [bankKey, tempId] of Object.entries(result.createdButtons || {})) {
+            remapped[bankKey] = idMap.get(tempId) ?? tempId
+          }
+          return { ...result, createdButtons: remapped }
+        }
+        pushSyncToCompanion(result.syncEntries).catch(e => console.error('[sync]', e.message))
+      }
       return result
     } catch (e) {
       isSaving = false
+      console.error('[saveSilent] exception:', e.message)
       return { error: e.message }
     }
   })

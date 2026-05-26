@@ -26,6 +26,7 @@ interface Props {
   onTriggerRemove: (stepKey: string, triggerKey: TriggerKey) => void
   onActionDelayChange: (stepKey: string, triggerKey: TriggerKey, actionId: string, newDelay: number) => void
   onExecutionModeChange: (stepKey: string, triggerKey: TriggerKey, mode: ExecutionMode) => void
+  onVisibleMsChange?: (visibleMs: number) => void
 }
 
 const LANE_HEIGHT = 72      // height of one action lane
@@ -108,6 +109,7 @@ export default function Timeline({
   onTriggerRemove,
   onActionDelayChange,
   onExecutionModeChange,
+  onVisibleMsChange,
 }: Props) {
   const trackAreaRef = useRef<HTMLDivElement>(null)
   const [visibleMs, setVisibleMs] = useState(5000)
@@ -127,6 +129,8 @@ export default function Timeline({
     window.addEventListener('mousedown', close)
     return () => window.removeEventListener('mousedown', close)
   }, [contextMenu])
+
+  useEffect(() => { onVisibleMsChange?.(visibleMs) }, [visibleMs, onVisibleMsChange])
 
   const MIN_ACTION_WIDTH = 100   // fixed action section width
   const MIN_WAIT_PX = 54         // min wait section width when a wait exists

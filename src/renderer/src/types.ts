@@ -92,6 +92,7 @@ export interface CompanionInstance {
 
 export interface PageInfo {
   name?: string
+  id?: string  // Companion v5 page UUID (stored in pages table value.id)
 }
 
 export interface CompanionConfig {
@@ -102,6 +103,7 @@ export interface CompanionConfig {
   custom_variables?: Record<string, unknown>
   instances?: Record<string, CompanionInstance>
   oldPageNumber?: number
+  gridSize?: { columns: number; rows: number }
 }
 
 // Parsed bank key: "bank:PAGE-SLOT"

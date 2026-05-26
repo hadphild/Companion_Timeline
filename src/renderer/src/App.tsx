@@ -35,6 +35,10 @@ export default function App() {
   const [playheadMs, setPlayheadMs] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
+  const [timelineVisibleMs, setTimelineVisibleMs] = useState(5000)
+  const timelineVisibleMsRef = useRef(5000)
+  const [labelEditing, setLabelEditing] = useState(false)
+  const [labelDraft, setLabelDraft] = useState('')
   const animFrameRef = useRef<number | null>(null)
   const playStartRef = useRef<{ wallTime: number; startMs: number } | null>(null)
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
@@ -172,7 +176,21 @@ export default function App() {
     autoSaveTimerRef.current = setTimeout(() => {
       const cfg = configRef.current
       if (!cfg) return
-      window.api.saveSilent(JSON.stringify(cfg)).catch(() => {})
+      window.api.saveSilent(JSON.stringify(cfg)).then((result: any) => {
+        if (!result?.createdButtons || Object.keys(result.createdButtons).length === 0) return
+        // Assign the real Companion v5 IDs to newly-created buttons
+        setConfig(prev => {
+          if (!prev) return prev
+          const updated = { ...prev, controls: { ...prev.controls } }
+          for (const [bankKey, v5id] of Object.entries(result.createdButtons as Record<string, string>)) {
+            const ctrl = updated.controls[bankKey]
+            if (ctrl?.type === 'button') {
+              updated.controls[bankKey] = { ...ctrl, _v5id: v5id, _empty: undefined } as any
+            }
+          }
+          return updated
+        })
+      }).catch(() => {})
     }, 300)
   }, [])
 
@@ -306,6 +324,12 @@ export default function App() {
     },
     [autoSave]
   )
+
+  const handleLabelCommit = useCallback((text: string) => {
+    setLabelEditing(false)
+    if (!selectedButtonKey) return
+    updateButton(selectedButtonKey, ctrl => ({ ...ctrl, style: { ...ctrl.style, text } }))
+  }, [selectedButtonKey, updateButton])
 
   const handleActionSelect = useCallback(
     (actionId: string | null, triggerKey: TriggerKey, stepKey: string) => {
@@ -578,7 +602,10 @@ export default function App() {
     const allDelays = Object.values(selectedControl.steps).flatMap(s =>
       Object.values(s.action_sets).flatMap(acts => (acts ?? []).map(a => a.delay))
     )
-    const maxMs = Math.max(0, ...allDelays) + 300
+    // Tail = time for playhead to visually clear the last 100px action block
+    // pxPerMs ≈ (containerWidth≈800) / visibleMs  →  tail = 100 * visibleMs / 800
+    const tail = Math.max(300, Math.round(timelineVisibleMsRef.current / 8))
+    const maxMs = Math.max(0, ...allDelays) + tail
     if (startMs >= maxMs) { setPlayheadMs(0); return }
 
     setIsPlaying(true)
@@ -630,8 +657,23 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler)
   }, [isPlaying])
 
-  // Stop playback if button changes
-  useEffect(() => { stopAnimation(); setIsPlaying(false); setIsPaused(false) }, [selectedButtonKey]) // eslint-disable-line
+  // Space = play/pause, Escape = stop
+  const handlePlayRef = useRef(handlePlay)
+  const handleStopRef = useRef(handleStop)
+  handlePlayRef.current = handlePlay
+  handleStopRef.current = handleStop
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT') return
+      if (e.key === ' ') { e.preventDefault(); handlePlayRef.current() }
+      if (e.key === 'Escape') { e.preventDefault(); handleStopRef.current() }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  // Stop playback and close label editor when button changes
+  useEffect(() => { stopAnimation(); setIsPlaying(false); setIsPaused(false); setLabelEditing(false) }, [selectedButtonKey]) // eslint-disable-line
 
   const instances = config?.instances ?? {}
 
@@ -815,13 +857,13 @@ export default function App() {
             className="toolbar-btn"
             onClick={handleStop}
             disabled={!isPlaying && !isPaused}
-            title="Stop and reset to start"
+            title="Stop and reset to start [Esc]"
           >■</button>
           <button
             className={`toolbar-btn ${isPlaying ? 'toolbar-btn--playing' : isPaused ? 'toolbar-btn--active' : ''}`}
             onClick={handlePlay}
             disabled={!selectedButtonKey || !selectedControl}
-            title={isPlaying ? 'Pause' : isPaused ? 'Resume' : 'Play from playhead · Arrow keys to nudge · Shift+Arrow = 500ms · Cmd+Arrow = 100ms'}
+            title={isPlaying ? 'Pause [Space]' : isPaused ? 'Resume [Space]' : 'Play from playhead [Space] · Arrow keys to nudge · Shift+Arrow = 500ms · Cmd+Arrow = 100ms'}
           >
             {isPlaying ? '⏸' : '▶'}
           </button>
@@ -947,7 +989,27 @@ export default function App() {
               <>
                 <div className="button-header" style={{ backgroundColor: bgColor, color: fgColor }}>
                   <span className="button-header-key">{selectedButtonKey}</span>
-                  <span className="button-header-text">{buttonStyle?.text || '(no label)'}</span>
+                  {labelEditing ? (
+                    <input
+                      className="button-header-label-input"
+                      autoFocus
+                      value={labelDraft}
+                      onChange={e => setLabelDraft(e.target.value)}
+                      onBlur={e => handleLabelCommit(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.currentTarget.blur() }
+                        if (e.key === 'Escape') { setLabelEditing(false) }
+                      }}
+                    />
+                  ) : (
+                    <span
+                      className="button-header-text button-header-text--editable"
+                      title="Click to edit label"
+                      onClick={() => { setLabelDraft(buttonStyle?.text ?? ''); setLabelEditing(true) }}
+                    >
+                      {buttonStyle?.text || '(no label)'}
+                    </span>
+                  )}
                 </div>
                 <Timeline
                   buttonKey={selectedButtonKey!}
@@ -967,6 +1029,7 @@ export default function App() {
                   onTriggerRemove={handleTriggerRemove}
                   onActionDelayChange={handleActionDelayChange}
                   onExecutionModeChange={handleExecutionModeChange}
+                  onVisibleMsChange={ms => { timelineVisibleMsRef.current = ms; setTimelineVisibleMs(ms) }}
                 />
               </>
             ) : (

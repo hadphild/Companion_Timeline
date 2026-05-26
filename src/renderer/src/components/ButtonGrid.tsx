@@ -14,11 +14,13 @@ interface Props {
   onSelect: (key: string) => void
 }
 
-const SLOTS_PER_ROW = 8
-
 export default function ButtonGrid({ config, selectedKey, buttonStates, onSelect }: Props) {
+  const gridCols = config.gridSize?.columns ?? 8
+  const gridRows = config.gridSize?.rows ?? 4
+  const totalSlots = gridCols * gridRows
+
   const pages = useMemo(() => {
-    const map: Record<number, Record<number, { key: string; ctrl: ButtonControl }>> = {}
+    const map: Record<number, Record<number, { key: string; ctrl: ButtonControl } | null>> = {}
     for (const [key, ctrl] of Object.entries(config.controls)) {
       if (ctrl.type !== 'button') continue
       const ref = parseBankKey(key)
@@ -38,10 +40,7 @@ export default function ButtonGrid({ config, selectedKey, buttonStates, onSelect
   return (
     <div className="sidebar">
       {pageNums.map((page) => {
-        const slots = pages[page]
-        const slotNums = Object.keys(slots).map(Number).sort((a, b) => a - b)
-        const maxSlot = Math.max(...slotNums, SLOTS_PER_ROW)
-        const rows = Math.ceil(maxSlot / SLOTS_PER_ROW)
+        const slots = pages[page] ?? {}
 
         return (
           <div key={page} className="page-section">
@@ -50,14 +49,25 @@ export default function ButtonGrid({ config, selectedKey, buttonStates, onSelect
             </div>
             <div
               className="button-grid"
-              style={{ gridTemplateColumns: `repeat(${SLOTS_PER_ROW}, 1fr)` }}
+              style={{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }}
             >
-              {Array.from({ length: rows * SLOTS_PER_ROW }, (_, i) => {
+              {Array.from({ length: totalSlots }, (_, i) => {
                 const slot = i + 1
                 const entry = slots[slot]
+
                 if (!entry) {
-                  return <div key={slot} className="btn-cell btn-cell--empty" />
+                  // Empty slot — still selectable so user can add actions to it
+                  const key = `bank:${page}-${slot}`
+                  return (
+                    <button
+                      key={slot}
+                      className={`btn-cell btn-cell--empty ${selectedKey === key ? 'btn-cell--selected' : ''}`}
+                      onClick={() => onSelect(key)}
+                      title={`Slot ${slot}`}
+                    />
+                  )
                 }
+
                 const { key, ctrl } = entry
                 const live = buttonStates?.[key]
                 const bg = intToColor(ctrl.style.bgcolor ?? 0)
