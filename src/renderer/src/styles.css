@@ -1246,6 +1246,75 @@ html, body, #root {
   font-size: 12px;
 }
 
+/* Multi-button timeline: divider row between button groups */
+.track-btn-divider {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--border2);
+  border-bottom: none;
+  background: var(--bg);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.track-btn-divider:hover { background: rgba(255,255,255,0.03); }
+.track-btn-divider-label {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 6px 0 10px;
+  border-right: 1px solid var(--border2);
+  background: var(--bg2);
+  height: 100%;
+  gap: 1px;
+}
+.track-btn-divider-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-btn-divider-slot {
+  font-size: 9px;
+  color: var(--text3);
+  white-space: nowrap;
+}
+.track-btn-divider-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border2);
+  margin: 0 8px;
+}
+
+/* Compact read-only tracks for non-selected buttons */
+.track-row--other {
+  opacity: 0.7;
+  transition: opacity 0.1s;
+}
+.track-row--other:hover { opacity: 1; background: rgba(255,255,255,0.02); }
+.track-label--other {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+.track-label-btn-name {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 11px;
+}
+.track-label-sub {
+  font-size: 9px;
+  color: var(--text3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.clip-block--readonly { pointer-events: none; opacity: 0.75; }
+.clip-block--readonly .clip-action { cursor: default; }
+
 .timeline-footer {
   height: 22px;
   background: var(--bg);

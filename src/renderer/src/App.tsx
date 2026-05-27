@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import ButtonGrid from './components/ButtonGrid'
-import Timeline from './components/Timeline'
+import Timeline, { type TimelineButton } from './components/Timeline'
 import ActionInspector from './components/ActionInspector'
 import AddActionModal from './components/AddActionModal'
 import LibraryPanel from './components/LibraryPanel'
@@ -11,7 +11,8 @@ import {
   CompanionAction,
   ExecutionMode,
   TriggerKey,
-  intToColor
+  intToColor,
+  parseBankKey
 } from './types'
 import { useCompanionSatellite } from './hooks/useCompanionSatellite'
 import './styles.css'
@@ -495,6 +496,37 @@ export default function App() {
     return ctrl?.type === 'button' ? (ctrl as ButtonControl) : null
   }, [config, selectedButtonKey])
 
+  // All buttons with actions (plus selected button even if empty) for multi-timeline
+  const timelineButtons = useMemo((): TimelineButton[] => {
+    if (!config) return []
+    const result: TimelineButton[] = []
+    for (const [key, ctrl] of Object.entries(config.controls)) {
+      if (ctrl.type !== 'button') continue
+      const bc = ctrl as ButtonControl
+      const hasActions = Object.values(bc.steps).some(s =>
+        Object.values(s.action_sets).some(acts => acts && acts.length > 0)
+      )
+      if (!hasActions && key !== selectedButtonKey) continue
+      const ref = parseBankKey(key)
+      if (!ref) continue
+      const pageLabel = config.page?.[ref.page]?.name || `Page ${ref.page}`
+      result.push({
+        key,
+        label: bc.style?.text?.trim() || `Slot ${ref.slot}`,
+        pageSlot: `${pageLabel} · ${ref.slot}`,
+        control: bc
+      })
+    }
+    result.sort((a, b) => {
+      if (a.key === selectedButtonKey) return -1
+      if (b.key === selectedButtonKey) return 1
+      const ra = parseBankKey(a.key)!
+      const rb = parseBankKey(b.key)!
+      return ra.page !== rb.page ? ra.page - rb.page : ra.slot - rb.slot
+    })
+    return result
+  }, [config, selectedButtonKey])
+
   const selectedActionData = useMemo(() => {
     if (!selectedControl || !selectedAction) return null
     const step = selectedControl.steps[selectedAction.stepKey]
@@ -882,6 +914,9 @@ export default function App() {
             onClick={() => setShowLibrary(v => !v)}
             title="Toggle action library"
           >⊞ Library</button>
+          {isLiveDb && (
+            <button className="toolbar-btn" onClick={handleLoadFromCompanion} title="Re-read Companion database and discard local changes">↺ Reload</button>
+          )}
           <button className="toolbar-btn" onClick={handleOpen}>Open File…</button>
           {!isLiveDb && (
             <button className="toolbar-btn" onClick={handleSave} disabled={!config}>Save</button>
@@ -985,58 +1020,53 @@ export default function App() {
           )}
 
           <div className="main-panel">
-            {selectedControl ? (
-              <>
-                <div className="button-header" style={{ backgroundColor: bgColor, color: fgColor }}>
-                  <span className="button-header-key">{selectedButtonKey}</span>
-                  {labelEditing ? (
-                    <input
-                      className="button-header-label-input"
-                      autoFocus
-                      value={labelDraft}
-                      onChange={e => setLabelDraft(e.target.value)}
-                      onBlur={e => handleLabelCommit(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') { e.currentTarget.blur() }
-                        if (e.key === 'Escape') { setLabelEditing(false) }
-                      }}
-                    />
-                  ) : (
-                    <span
-                      className="button-header-text button-header-text--editable"
-                      title="Click to edit label"
-                      onClick={() => { setLabelDraft(buttonStyle?.text ?? ''); setLabelEditing(true) }}
-                    >
-                      {buttonStyle?.text || '(no label)'}
-                    </span>
-                  )}
-                </div>
-                <Timeline
-                  buttonKey={selectedButtonKey!}
-                  control={selectedControl}
-                  instances={instances}
-                  selectedActionId={selectedAction?.id ?? null}
-                  playheadMs={playheadMs}
-                  onPlayheadChange={setPlayheadMs}
-                  onActionSelect={handleActionSelect}
-                  onActionMove={handleActionMove}
-                  onActionAdd={handleActionAdd}
-                  onActionDrop={handleActionDrop}
-                  onActionDelete={handleActionDelete}
-                  onStepAdd={handleStepAdd}
-                  onStepRemove={handleStepRemove}
-                  onTriggerAdd={handleTriggerAdd}
-                  onTriggerRemove={handleTriggerRemove}
-                  onActionDelayChange={handleActionDelayChange}
-                  onExecutionModeChange={handleExecutionModeChange}
-                  onVisibleMsChange={ms => { timelineVisibleMsRef.current = ms; setTimelineVisibleMs(ms) }}
-                />
-              </>
-            ) : (
-              <div className="no-selection">
-                <p>Select a button from the sidebar</p>
+            {selectedControl && (
+              <div className="button-header" style={{ backgroundColor: bgColor, color: fgColor }}>
+                <span className="button-header-key">{selectedButtonKey}</span>
+                {labelEditing ? (
+                  <input
+                    className="button-header-label-input"
+                    autoFocus
+                    value={labelDraft}
+                    onChange={e => setLabelDraft(e.target.value)}
+                    onBlur={e => handleLabelCommit(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') { e.currentTarget.blur() }
+                      if (e.key === 'Escape') { setLabelEditing(false) }
+                    }}
+                  />
+                ) : (
+                  <span
+                    className="button-header-text button-header-text--editable"
+                    title="Click to edit label"
+                    onClick={() => { setLabelDraft(buttonStyle?.text ?? ''); setLabelEditing(true) }}
+                  >
+                    {buttonStyle?.text || '(no label)'}
+                  </span>
+                )}
               </div>
             )}
+            <Timeline
+              buttons={timelineButtons}
+              selectedKey={selectedButtonKey}
+              instances={instances}
+              selectedActionId={selectedAction?.id ?? null}
+              playheadMs={playheadMs}
+              onPlayheadChange={setPlayheadMs}
+              onButtonSelect={key => { setSelectedButtonKey(key); setSelectedAction(null); setPlayheadMs(0) }}
+              onActionSelect={handleActionSelect}
+              onActionMove={handleActionMove}
+              onActionAdd={handleActionAdd}
+              onActionDrop={handleActionDrop}
+              onActionDelete={handleActionDelete}
+              onStepAdd={handleStepAdd}
+              onStepRemove={handleStepRemove}
+              onTriggerAdd={handleTriggerAdd}
+              onTriggerRemove={handleTriggerRemove}
+              onActionDelayChange={handleActionDelayChange}
+              onExecutionModeChange={handleExecutionModeChange}
+              onVisibleMsChange={ms => { timelineVisibleMsRef.current = ms; setTimelineVisibleMs(ms) }}
+            />
           </div>
 
           {selectedActionData && selectedAction ? (

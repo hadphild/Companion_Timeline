@@ -234,14 +234,15 @@ async function pushSyncToCompanionWithIdMap(syncEntries) {
   const controlIdMap = new Map()
   const newEntries = syncEntries.filter(e => e._newControl && e._location)
   if (newEntries.length > 0) {
-    const data = await trpcSubscribeOnce(ws, 'pages.watch')
-    if (data?.pages) {
-      const pageOrder = data.order || Object.keys(data.pages)
+    const raw = await trpcSubscribeOnce(ws, 'pages.watch')
+    const pagesEvent = Array.isArray(raw) ? raw[0] : raw
+    if (pagesEvent?.pages) {
+      const pageOrder = pagesEvent.order || Object.keys(pagesEvent.pages)
       for (const entry of newEntries) {
         if (controlIdMap.has(entry.controlId)) continue
         const loc = entry._location
         const pageId = pageOrder[loc.pageNumber - 1]
-        const companionId = data.pages[pageId]?.controls?.[loc.row]?.[loc.column]
+        const companionId = pagesEvent.pages[pageId]?.controls?.[loc.row]?.[loc.column]
         if (companionId) {
           controlIdMap.set(entry.controlId, companionId)
           console.log(`[CT] mapped temp ${entry.controlId} → Companion ${companionId}`)
@@ -978,10 +979,11 @@ app.whenReady().then(() => {
       try {
         const ws = await getCompanionTRPC()
         if (ws) {
-          const data = await trpcSubscribeOnce(ws, 'pages.watch')
-          console.log('[remote] pages.watch raw:', JSON.stringify(data)?.slice(0, 500))
+          const raw = await trpcSubscribeOnce(ws, 'pages.watch')
+          console.log('[remote] pages.watch raw:', JSON.stringify(raw)?.slice(0, 500))
+          // Response may be an array of update messages; first is { type:'init', order:[...], pages:{...} }
+          const data = Array.isArray(raw) ? raw[0] : raw
           if (data && typeof data === 'object') {
-            // Companion v5 format: { type:'init', order:[uuids], pages:{ uuid: { id, name, controls:{ row:{ col: controlId } } } } }
             const pageOrder = data.order || Object.keys(data.pages || {})
             const pageMap = data.pages || {}
             let maxRow = 3, maxCol = 7  // min 4 rows × 8 cols
