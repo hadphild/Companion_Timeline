@@ -1894,4 +1894,222 @@ html, body, #root {
 }
 .context-menu-item:hover { background: var(--bg3); }
 .context-menu-item--danger { color: #f87171; }
+
+/* ── View tab switcher (Timeline / Node) ──────────────────────────────────── */
+.view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.view-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text3);
+  border-radius: 5px;
+  padding: 3px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.view-tab:hover {
+  background: var(--bg3);
+  color: var(--text2);
+}
+
+.view-tab--active {
+  background: var(--bg3);
+  border-color: var(--border2);
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* ── Node editor ──────────────────────────────────────────────────────────── */
+.ne-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.ne-canvas {
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+  position: relative;
+}
+
+.ne-drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(245, 166, 35, 0.06);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.ne-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+  font-size: 13px;
+}
+
+/* Strip React Flow's default node wrapper so our styles take over */
+.ne-canvas .react-flow__node {
+  padding: 0;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  width: auto !important;
+}
+
+.ne-canvas .react-flow__node.selected > .ne-node {
+  box-shadow: 0 0 0 2px var(--accent) !important;
+}
+
+/* Override ReactFlow panel background */
+.ne-canvas .react-flow__renderer,
+.ne-canvas .react-flow {
+  background: var(--bg) !important;
+}
+
+/* Controls panel */
+.ne-canvas .react-flow__controls {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ne-canvas .react-flow__controls-button {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  color: var(--text2);
+  fill: var(--text2);
+}
+.ne-canvas .react-flow__controls-button:hover {
+  background: var(--bg3);
+}
+.ne-canvas .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+/* Base node */
+.ne-node {
+  min-width: 200px;
+  font-size: 12px;
+  border-radius: 8px;
+  user-select: none;
+  position: relative;
+}
+
+/* ── Trigger (entry point) node — green pill ── */
+.ne-trigger {
+  background: #162616;
+  border: 1.5px solid #2d6a2d;
+  padding: 10px 16px;
+  text-align: center;
+  border-radius: 22px;
+}
+
+.ne-trigger-label {
+  font-weight: 700;
+  font-size: 13px;
+  color: #6fcf6f;
+  letter-spacing: 0.03em;
+}
+
+/* ── Action node — blue-gray card ── */
+.ne-action {
+  background: var(--bg3);
+  border: 1.5px solid var(--border2);
+  padding: 8px 12px;
+}
+
+.ne-action--selected {
+  border-color: var(--accent) !important;
+  background: #2b1f00;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.ne-action-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ne-action-inst {
+  font-size: 10px;
+  color: var(--text3);
+}
+
+/* ── Wait node — amber pill ── */
+.ne-wait {
+  background: #231a00;
+  border: 1.5px solid #5a4200;
+  padding: 7px 16px;
+  text-align: center;
+  border-radius: 18px;
+  min-width: 120px !important;
+}
+
+.ne-wait-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ── Group node — purple card ── */
+.ne-group {
+  background: #1a1230;
+  border: 1.5px solid #3a2a5a;
+  padding: 8px 12px;
+}
+
+.ne-group--selected {
+  border-color: var(--accent) !important;
+  background: #2b1f00;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.ne-group-mode {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a87fea;
+  margin-bottom: 4px;
+}
+
+.ne-group-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+.ne-group-count {
+  font-size: 10px;
+  color: var(--text3);
+}
 .context-menu-item--danger:hover { background: rgba(248,113,113,0.12); }

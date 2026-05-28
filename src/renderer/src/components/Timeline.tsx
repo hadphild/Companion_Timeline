@@ -20,7 +20,6 @@ interface Props {
   selectedKey: string | null
   instances: Record<string, CompanionInstance>
   selectedActionId: string | null
-  onButtonSelect: (key: string) => void
   onActionSelect: (actionId: string | null, triggerKey: TriggerKey, stepKey: string) => void
   onActionMove: (stepKey: string, triggerKey: TriggerKey, actionId: string, newDelay: number) => void
   onActionAdd: (stepKey: string, triggerKey: TriggerKey, delay: number) => void
@@ -47,8 +46,6 @@ const ACTION_MIN_WIDTH = 80
 const CLIP_EST_PX_PER_CHAR = 7
 const MIN_ACTION_WIDTH = 100
 const MIN_WAIT_PX = 54
-const BTN_DIVIDER_HEIGHT = 26
-const OTHER_LANE_HEIGHT = 52
 
 const STANDARD_TRIGGERS: TriggerKey[] = ['down', 'up']
 
@@ -96,7 +93,6 @@ export default function Timeline({
   selectedKey,
   instances,
   selectedActionId,
-  onButtonSelect,
   onActionSelect,
   onActionMove,
   onActionAdd,
@@ -159,11 +155,6 @@ export default function Timeline({
     }
     return result
   }, [selectedControl, currentStepKey])
-
-  const otherButtons = useMemo(
-    () => buttons.filter(b => b.key !== selectedKey),
-    [buttons, selectedKey]
-  )
 
   const pxPerMs = useCallback((w: number) => w / visibleMs, [visibleMs])
   const msToPx = useCallback((ms: number, w: number) => (ms - scrollMs) * pxPerMs(w), [scrollMs, pxPerMs])
@@ -461,59 +452,7 @@ export default function Timeline({
     )
   }
 
-  // Render a compact read-only track for a non-selected button
-  const renderOtherButton = (btn: TimelineButton) => {
-    const stepKey = Object.keys(btn.control.steps).sort()[0] ?? '0'
-    const step = btn.control.steps[stepKey]
-    const actions = step?.action_sets['down'] ?? []
-
-    const ppm = pxPerMs(containerWidth)
-    const laneAssignments = assignLanes(actions, ms => ms * ppm, () => MIN_ACTION_WIDTH)
-    const laneMap = new Map(laneAssignments.map(({ id, lane }) => [id, lane]))
-    const laneCount = Math.max(1, ...laneAssignments.map(l => l.lane + 1))
-    const trackHeight = laneCount * OTHER_LANE_HEIGHT
-    const pad = 4
-
-    return (
-      <div
-        key={btn.key}
-        className="track-row track-row--other"
-        style={{ height: trackHeight, cursor: 'pointer' }}
-        onClick={() => onButtonSelect(btn.key)}
-        title={`Select: ${btn.label} (${btn.pageSlot})`}
-      >
-        <div className="track-label track-label--other" style={{ width: LABEL_WIDTH }}>
-          <span className="track-label-text track-label-btn-name">{btn.label}</span>
-          <span className="track-label-sub">{btn.pageSlot}</span>
-        </div>
-        <div className="track-body" style={{ position: 'relative', flex: 1, height: '100%' }}>
-          {renderGridLines(containerWidth)}
-          {actions.map(action => {
-            const x = msToPx(action.delay, containerWidth)
-            const lane = laneMap.get(action.id) ?? 0
-            const top = lane * OTHER_LANE_HEIGHT + pad
-            const bottom = (laneCount - lane - 1) * OTHER_LANE_HEIGHT + pad
-            const instLabel = instances[action.instance]?.label ?? action.instance?.slice(0, 6) ?? '?'
-            const isGroup = action.instance === 'internal' && action.action === 'action_group'
-            return (
-              <div
-                key={action.id}
-                className={`clip-block clip-block--readonly ${isGroup ? 'clip-block--group' : ''}`}
-                style={{ left: x, top, bottom, width: MIN_ACTION_WIDTH }}
-              >
-                <div className="clip-action" style={{ width: MIN_ACTION_WIDTH }}>
-                  <span className="action-name">{isGroup ? 'Group' : (action.action || '?')}</span>
-                  <span className="action-instance">{instLabel}</span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    )
-  }
-
-  const hasAnyContent = selectedControl || otherButtons.length > 0
+  const hasAnyContent = !!selectedControl
 
   return (
     <div className="timeline-wrap">
@@ -580,25 +519,6 @@ export default function Timeline({
 
         {/* Selected button tracks */}
         {selectedTracks.map(({ triggerKey, actions }) => renderSelectedTrack(triggerKey, actions))}
-
-        {/* Divider + other buttons */}
-        {otherButtons.map(btn => (
-          <React.Fragment key={btn.key}>
-            <div
-              className="track-btn-divider"
-              style={{ height: BTN_DIVIDER_HEIGHT }}
-              onClick={() => onButtonSelect(btn.key)}
-              title={`Select: ${btn.label}`}
-            >
-              <div className="track-btn-divider-label" style={{ width: LABEL_WIDTH }}>
-                <span className="track-btn-divider-name">{btn.label}</span>
-                <span className="track-btn-divider-slot">{btn.pageSlot}</span>
-              </div>
-              <div className="track-btn-divider-rule" />
-            </div>
-            {renderOtherButton(btn)}
-          </React.Fragment>
-        ))}
 
         {!hasAnyContent && (
           <div className="timeline-empty">

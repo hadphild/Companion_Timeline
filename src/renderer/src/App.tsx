@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import ButtonGrid from './components/ButtonGrid'
 import Timeline, { type TimelineButton } from './components/Timeline'
+import NodeEditor from './components/NodeEditor'
 import ActionInspector from './components/ActionInspector'
 import AddActionModal from './components/AddActionModal'
 import LibraryPanel from './components/LibraryPanel'
@@ -38,6 +39,7 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false)
   const [timelineVisibleMs, setTimelineVisibleMs] = useState(5000)
   const timelineVisibleMsRef = useRef(5000)
+  const [activeView, setActiveView] = useState<'timeline' | 'nodes'>('timeline')
   const [labelEditing, setLabelEditing] = useState(false)
   const [labelDraft, setLabelDraft] = useState('')
   const animFrameRef = useRef<number | null>(null)
@@ -496,35 +498,20 @@ export default function App() {
     return ctrl?.type === 'button' ? (ctrl as ButtonControl) : null
   }, [config, selectedButtonKey])
 
-  // All buttons with actions (plus selected button even if empty) for multi-timeline
   const timelineButtons = useMemo((): TimelineButton[] => {
-    if (!config) return []
-    const result: TimelineButton[] = []
-    for (const [key, ctrl] of Object.entries(config.controls)) {
-      if (ctrl.type !== 'button') continue
-      const bc = ctrl as ButtonControl
-      const hasActions = Object.values(bc.steps).some(s =>
-        Object.values(s.action_sets).some(acts => acts && acts.length > 0)
-      )
-      if (!hasActions && key !== selectedButtonKey) continue
-      const ref = parseBankKey(key)
-      if (!ref) continue
-      const pageLabel = config.page?.[ref.page]?.name || `Page ${ref.page}`
-      result.push({
-        key,
-        label: bc.style?.text?.trim() || `Slot ${ref.slot}`,
-        pageSlot: `${pageLabel} · ${ref.slot}`,
-        control: bc
-      })
-    }
-    result.sort((a, b) => {
-      if (a.key === selectedButtonKey) return -1
-      if (b.key === selectedButtonKey) return 1
-      const ra = parseBankKey(a.key)!
-      const rb = parseBankKey(b.key)!
-      return ra.page !== rb.page ? ra.page - rb.page : ra.slot - rb.slot
-    })
-    return result
+    if (!config || !selectedButtonKey) return []
+    const ctrl = config.controls[selectedButtonKey]
+    if (!ctrl || ctrl.type !== 'button') return []
+    const bc = ctrl as ButtonControl
+    const ref = parseBankKey(selectedButtonKey)
+    if (!ref) return []
+    const pageLabel = config.page?.[ref.page]?.name || `Page ${ref.page}`
+    return [{
+      key: selectedButtonKey,
+      label: bc.style?.text?.trim() || `Slot ${ref.slot}`,
+      pageSlot: `${pageLabel} · ${ref.slot}`,
+      control: bc
+    }]
   }, [config, selectedButtonKey])
 
   const selectedActionData = useMemo(() => {
@@ -1046,27 +1033,48 @@ export default function App() {
                 )}
               </div>
             )}
-            <Timeline
-              buttons={timelineButtons}
-              selectedKey={selectedButtonKey}
-              instances={instances}
-              selectedActionId={selectedAction?.id ?? null}
-              playheadMs={playheadMs}
-              onPlayheadChange={setPlayheadMs}
-              onButtonSelect={key => { setSelectedButtonKey(key); setSelectedAction(null); setPlayheadMs(0) }}
-              onActionSelect={handleActionSelect}
-              onActionMove={handleActionMove}
-              onActionAdd={handleActionAdd}
-              onActionDrop={handleActionDrop}
-              onActionDelete={handleActionDelete}
-              onStepAdd={handleStepAdd}
-              onStepRemove={handleStepRemove}
-              onTriggerAdd={handleTriggerAdd}
-              onTriggerRemove={handleTriggerRemove}
-              onActionDelayChange={handleActionDelayChange}
-              onExecutionModeChange={handleExecutionModeChange}
-              onVisibleMsChange={ms => { timelineVisibleMsRef.current = ms; setTimelineVisibleMs(ms) }}
-            />
+            <div className="view-tabs">
+              <button
+                className={`view-tab ${activeView === 'timeline' ? 'view-tab--active' : ''}`}
+                onClick={() => setActiveView('timeline')}
+              >Timeline</button>
+              <button
+                className={`view-tab ${activeView === 'nodes' ? 'view-tab--active' : ''}`}
+                onClick={() => setActiveView('nodes')}
+              >Node</button>
+            </div>
+            {activeView === 'timeline' ? (
+              <Timeline
+                buttons={timelineButtons}
+                selectedKey={selectedButtonKey}
+                instances={instances}
+                selectedActionId={selectedAction?.id ?? null}
+                playheadMs={playheadMs}
+                onPlayheadChange={setPlayheadMs}
+                onActionSelect={handleActionSelect}
+                onActionMove={handleActionMove}
+                onActionAdd={handleActionAdd}
+                onActionDrop={handleActionDrop}
+                onActionDelete={handleActionDelete}
+                onStepAdd={handleStepAdd}
+                onStepRemove={handleStepRemove}
+                onTriggerAdd={handleTriggerAdd}
+                onTriggerRemove={handleTriggerRemove}
+                onActionDelayChange={handleActionDelayChange}
+                onExecutionModeChange={handleExecutionModeChange}
+                onVisibleMsChange={ms => { timelineVisibleMsRef.current = ms; setTimelineVisibleMs(ms) }}
+              />
+            ) : (
+              <NodeEditor
+                control={selectedControl}
+                instances={instances}
+                selectedActionId={selectedAction?.id ?? null}
+                onActionSelect={handleActionSelect}
+                onActionDrop={handleActionDrop}
+                onStepAdd={handleStepAdd}
+                onStepRemove={handleStepRemove}
+              />
+            )}
           </div>
 
           {selectedActionData && selectedAction ? (
