@@ -46,7 +46,7 @@ export default function App() {
   const playStartRef = useRef<{ wallTime: number; startMs: number } | null>(null)
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
   const [addingAction, setAddingAction] = useState<{
-    stepKey: string; triggerKey: TriggerKey; delay: number
+    stepKey: string; triggerKey: TriggerKey; delay: number; groupPath?: string[]
   } | null>(null)
   const [companionUpdate, setCompanionUpdate] = useState<{ filePath: string; content: string } | null>(null)
   const isLiveDbRef = useRef(isLiveDb)
@@ -379,7 +379,7 @@ export default function App() {
   const handleModalAdd = useCallback(
     (template: ActionTemplate) => {
       if (!selectedButtonKey || !addingAction) return
-      const { stepKey, triggerKey, delay } = addingAction
+      const { stepKey, triggerKey, delay, groupPath } = addingAction
       const newAction: CompanionAction = {
         id: generateId(),
         action: template.definitionId,
@@ -387,24 +387,30 @@ export default function App() {
         options: template.options,
         delay
       }
-      updateButton(selectedButtonKey, (ctrl) => {
-        const step = ctrl.steps[stepKey]
-        const existing = step.action_sets[triggerKey] ?? []
-        return {
-          ...ctrl,
-          steps: {
-            ...ctrl.steps,
-            [stepKey]: {
-              ...step,
-              action_sets: {
-                ...step.action_sets,
-                [triggerKey]: [...existing, newAction]
+      if (groupPath && groupPath.length > 0) {
+        handleChildActionDrop(stepKey, triggerKey, groupPath, {
+          connectionId: template.connectionId,
+          definitionId: template.definitionId,
+          options: template.options,
+        }, delay)
+        setAddingAction(null)
+        return
+      } else {
+        updateButton(selectedButtonKey, (ctrl) => {
+          const step = ctrl.steps[stepKey]
+          return {
+            ...ctrl,
+            steps: {
+              ...ctrl.steps,
+              [stepKey]: {
+                ...step,
+                action_sets: { ...step.action_sets, [triggerKey]: [...(step.action_sets[triggerKey] ?? []), newAction] }
               }
             }
           }
-        }
-      })
-      setSelectedAction({ id: newAction.id, triggerKey, stepKey })
+        })
+        setSelectedAction({ id: newAction.id, triggerKey, stepKey })
+      }
       setAddingAction(null)
     },
     [selectedButtonKey, addingAction, updateButton]
@@ -433,6 +439,109 @@ export default function App() {
       if (selectedAction?.id === actionId) setSelectedAction(null)
     },
     [selectedButtonKey, updateButton, selectedAction]
+  )
+
+  const handleActionsUpdate = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, actions: CompanionAction[]) => {
+      if (!selectedButtonKey) return
+      updateButton(selectedButtonKey, (ctrl) => {
+        const step = ctrl.steps[stepKey]
+        if (!step) return ctrl
+        return {
+          ...ctrl,
+          steps: {
+            ...ctrl.steps,
+            [stepKey]: { ...step, action_sets: { ...step.action_sets, [triggerKey]: actions } }
+          }
+        }
+      })
+    },
+    [selectedButtonKey, updateButton]
+  )
+
+  // Traverse a path of group IDs and apply an updater to the deepest group's children
+  const updateGroupAtPath = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, path: string[], updater: (c: CompanionAction[]) => CompanionAction[]) => {
+      if (!selectedButtonKey || path.length === 0) return
+      const traverse = (actions: CompanionAction[], remaining: string[]): CompanionAction[] => {
+        const [id, ...rest] = remaining
+        return actions.map(a => {
+          if (a.id !== id) return a
+          const kids = a.children?.default ?? []
+          return {
+            ...a,
+            children: {
+              ...a.children,
+              default: rest.length === 0 ? updater(kids) : traverse(kids, rest),
+            },
+          }
+        })
+      }
+      updateButton(selectedButtonKey, (ctrl) => {
+        const step = ctrl.steps[stepKey]
+        return {
+          ...ctrl,
+          steps: {
+            ...ctrl.steps,
+            [stepKey]: {
+              ...step,
+              action_sets: {
+                ...step.action_sets,
+                [triggerKey]: traverse(step.action_sets[triggerKey] ?? [], path),
+              },
+            },
+          },
+        }
+      })
+    },
+    [selectedButtonKey, updateButton]
+  )
+
+  const handleChildActionMove = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, path: string[], childId: string, newDelay: number) =>
+      updateGroupAtPath(stepKey, triggerKey, path, cs => cs.map(c => c.id === childId ? { ...c, delay: newDelay } : c)),
+    [updateGroupAtPath]
+  )
+
+  const handleChildActionReorder = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, path: string[], fromIdx: number, toIdx: number) =>
+      updateGroupAtPath(stepKey, triggerKey, path, cs => {
+        const next = [...cs]
+        const [moved] = next.splice(fromIdx, 1)
+        next.splice(toIdx, 0, moved)
+        return next
+      }),
+    [updateGroupAtPath]
+  )
+
+  const handleChildActionAdd = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, path: string[], delay: number) =>
+      setAddingAction({ stepKey, triggerKey, delay, groupPath: path }),
+    []
+  )
+
+  const handleChildActionDrop = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, path: string[], template: { connectionId: string; definitionId: string; options: Record<string, unknown> }, delay: number) => {
+      const isGroup = template.connectionId === 'internal' && template.definitionId === 'action_group'
+      const newAction: CompanionAction = {
+        id: generateId(),
+        action: template.definitionId,
+        instance: template.connectionId,
+        options: { ...template.options, ...(isGroup ? { execution_mode: 'concurrent' } : {}) },
+        delay,
+        ...(isGroup ? { children: { default: [] } } : {}),
+      }
+      updateGroupAtPath(stepKey, triggerKey, path, cs => [...cs, newAction])
+    },
+    [updateGroupAtPath]
+  )
+
+  const handleChildExecutionModeChange = useCallback(
+    (stepKey: string, triggerKey: TriggerKey, path: string[], childId: string, mode: ExecutionMode) =>
+      updateGroupAtPath(stepKey, triggerKey, path, cs =>
+        cs.map(c => c.id === childId ? { ...c, options: { ...c.options, execution_mode: mode } } : c)
+      ),
+    [updateGroupAtPath]
   )
 
   const handleActionDrop = useCallback(
@@ -676,20 +785,28 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler)
   }, [isPlaying])
 
-  // Space = play/pause, Escape = stop
+  // Space = play/pause, Escape = stop, Delete/Backspace = delete selected action (timeline only)
   const handlePlayRef = useRef(handlePlay)
   const handleStopRef = useRef(handleStop)
+  const selectedActionRef = useRef(selectedAction)
+  const activeViewRef = useRef(activeView)
   handlePlayRef.current = handlePlay
   handleStopRef.current = handleStop
+  selectedActionRef.current = selectedAction
+  activeViewRef.current = activeView
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === 'INPUT') return
       if (e.key === ' ') { e.preventDefault(); handlePlayRef.current() }
       if (e.key === 'Escape') { e.preventDefault(); handleStopRef.current() }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && activeViewRef.current === 'timeline') {
+        const sa = selectedActionRef.current
+        if (sa) { e.preventDefault(); handleActionDelete(sa.stepKey, sa.triggerKey, sa.id) }
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [handleActionDelete])
 
   // Stop playback and close label editor when button changes
   useEffect(() => { stopAnimation(); setIsPlaying(false); setIsPaused(false); setLabelEditing(false) }, [selectedButtonKey]) // eslint-disable-line
@@ -1063,6 +1180,11 @@ export default function App() {
                 onActionDelayChange={handleActionDelayChange}
                 onExecutionModeChange={handleExecutionModeChange}
                 onVisibleMsChange={ms => { timelineVisibleMsRef.current = ms; setTimelineVisibleMs(ms) }}
+                onChildActionMove={handleChildActionMove}
+                onChildActionReorder={handleChildActionReorder}
+                onChildActionAdd={handleChildActionAdd}
+                onChildActionDrop={handleChildActionDrop}
+                onChildExecutionModeChange={handleChildExecutionModeChange}
               />
             ) : (
               <NodeEditor
@@ -1071,6 +1193,8 @@ export default function App() {
                 selectedActionId={selectedAction?.id ?? null}
                 onActionSelect={handleActionSelect}
                 onActionDrop={handleActionDrop}
+                onActionDelete={handleActionDelete}
+                onActionsUpdate={handleActionsUpdate}
                 onStepAdd={handleStepAdd}
                 onStepRemove={handleStepRemove}
               />

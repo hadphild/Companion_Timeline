@@ -8,6 +8,35 @@ import {
   CompanionInstance
 } from '../types'
 
+// ---- Group traversal (defined outside component to avoid re-creation) ----
+
+export interface GroupInfo {
+  group: CompanionAction
+  triggerKey: TriggerKey
+  path: string[]        // IDs root→this group (inclusive), used as update key
+  absStart: number      // absolute ms when this group fires
+  depth: number
+}
+
+export function collectGroups(
+  actions: CompanionAction[],
+  triggerKey: TriggerKey,
+  ancestorPath: string[],
+  parentAbsDelay: number,
+  depth: number
+): GroupInfo[] {
+  const result: GroupInfo[] = []
+  for (const a of actions) {
+    if (a.instance === 'internal' && a.action === 'action_group') {
+      const path = [...ancestorPath, a.id]
+      const absStart = parentAbsDelay + a.delay
+      result.push({ group: a, triggerKey, path, absStart, depth })
+      result.push(...collectGroups(a.children?.default ?? [], triggerKey, path, absStart, depth + 1))
+    }
+  }
+  return result
+}
+
 export interface TimelineButton {
   key: string
   label: string      // e.g. "My Button" or "Slot 5"
@@ -34,6 +63,11 @@ interface Props {
   onActionDelayChange: (stepKey: string, triggerKey: TriggerKey, actionId: string, newDelay: number) => void
   onExecutionModeChange: (stepKey: string, triggerKey: TriggerKey, mode: ExecutionMode) => void
   onVisibleMsChange?: (visibleMs: number) => void
+  onChildActionMove?: (stepKey: string, triggerKey: TriggerKey, path: string[], childId: string, newDelay: number) => void
+  onChildActionReorder?: (stepKey: string, triggerKey: TriggerKey, path: string[], fromIdx: number, toIdx: number) => void
+  onChildActionAdd?: (stepKey: string, triggerKey: TriggerKey, path: string[], delay: number) => void
+  onChildActionDrop?: (stepKey: string, triggerKey: TriggerKey, path: string[], template: { connectionId: string; definitionId: string; options: Record<string, unknown> }, delay: number) => void
+  onChildExecutionModeChange?: (stepKey: string, triggerKey: TriggerKey, path: string[], childId: string, mode: ExecutionMode) => void
 }
 
 const LANE_HEIGHT = 72
@@ -107,6 +141,11 @@ export default function Timeline({
   onActionDelayChange,
   onExecutionModeChange,
   onVisibleMsChange,
+  onChildActionMove,
+  onChildActionReorder,
+  onChildActionAdd,
+  onChildActionDrop,
+  onChildExecutionModeChange,
 }: Props) {
   const trackAreaRef = useRef<HTMLDivElement>(null)
   const [visibleMs, setVisibleMs] = useState(5000)
@@ -364,6 +403,18 @@ export default function Timeline({
                 key={action.id}
                 className={`clip-block ${isSelected ? 'clip-block--selected' : ''} ${isGroup ? 'clip-block--group' : ''}`}
                 style={{ left: x, top, bottom, width: MIN_ACTION_WIDTH + wp }}
+                onDragOver={isGroup ? (e => { if (e.dataTransfer.types.includes('application/companion-action')) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy' } }) : undefined}
+                onDrop={isGroup ? (e => {
+                  const raw = e.dataTransfer.getData('application/companion-action')
+                  if (!raw) return
+                  e.preventDefault(); e.stopPropagation()
+                  const tmpl = JSON.parse(raw)
+                  const kids = action.children?.default ?? []
+                  const delay = execMode === 'sequential' && kids.length > 0
+                    ? Math.max(...kids.map(c => c.delay)) + 500
+                    : 0
+                  onChildActionDrop?.(currentStepKey, triggerKey, [action.id], tmpl, delay)
+                }) : undefined}
               >
                 <div
                   className={`clip-action ${isGroup ? 'clip-action--group' : ''}`}
@@ -452,6 +503,209 @@ export default function Timeline({
     )
   }
 
+  // ---- Group rendering helpers ----
+
+  // Depth colour palette — same look as main timeline, just tinted differently per level
+  const DEPTH_TINT = [
+    'rgba(74,158,255,0.05)',
+    'rgba(100,220,160,0.05)',
+    'rgba(255,180,74,0.05)',
+    'rgba(220,100,220,0.05)',
+  ]
+  const DEPTH_BORDER = [
+    'rgba(74,158,255,0.3)',
+    'rgba(100,220,160,0.3)',
+    'rgba(255,180,74,0.3)',
+    'rgba(220,100,220,0.3)',
+  ]
+
+  const renderSequentialSubTrack = (info: GroupInfo) => {
+    const { group, triggerKey, path, absStart, depth } = info
+    const children = [...(group.children?.default ?? [])].sort((a, b) => a.delay - b.delay)
+    const ppm = pxPerMs(containerWidth)
+    const absChildren = children.map(c => ({ ...c, delay: absStart + c.delay }))
+    const laneAssignments = assignLanes(absChildren, ms => ms * ppm, () => MIN_ACTION_WIDTH)
+    const laneMap = new Map(laneAssignments.map(({ id, lane }) => [id, lane]))
+    const laneCount = Math.max(1, ...laneAssignments.map(l => l.lane + 1))
+    const trackHeight = laneCount * LANE_HEIGHT
+    const startX = msToPx(absStart, containerWidth)
+    const indent = depth * 8
+
+    return (
+      <div
+        key={`sub-${group.id}`}
+        className="track-row track-row--subtimeline"
+        style={{
+          height: trackHeight,
+          background: DEPTH_TINT[depth % DEPTH_TINT.length],
+          borderTopColor: DEPTH_BORDER[depth % DEPTH_BORDER.length],
+        }}
+      >
+        <div className="track-label track-label--subtimeline" style={{ width: LABEL_WIDTH, paddingLeft: 10 + indent }}>
+          <span className="track-label-text" style={{ color: DEPTH_BORDER[depth % DEPTH_BORDER.length] }}>
+            {'↓'.repeat(depth + 1)} Sequential
+          </span>
+          <span className="track-label-sub">{msToLabel(absStart)}+</span>
+        </div>
+        <div
+          className="track-body"
+          style={{ position: 'relative', flex: 1, height: '100%' }}
+          onDoubleClick={e => {
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+            const absMs = Math.max(0, snapToGrid(pxToMs(e.clientX - rect.left, containerWidth), snapMs))
+            onChildActionAdd?.(currentStepKey, triggerKey, path, Math.max(0, absMs - absStart))
+          }}
+          onDragOver={e => { if (e.dataTransfer.types.includes('application/companion-action')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' } }}
+          onDrop={e => {
+            const raw = e.dataTransfer.getData('application/companion-action')
+            if (!raw) return
+            e.preventDefault()
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+            const absMs = Math.max(0, snapToGrid(pxToMs(e.clientX - rect.left, containerWidth), snapMs))
+            onChildActionDrop?.(currentStepKey, triggerKey, path, JSON.parse(raw), Math.max(0, absMs - absStart))
+          }}
+        >
+          {renderGridLines(containerWidth)}
+          {startX >= 0 && startX <= containerWidth && (
+            <div className="subtimeline-start-line" style={{ left: startX, background: DEPTH_BORDER[depth % DEPTH_BORDER.length] }} />
+          )}
+          {children.length === 0 && (
+            <div className="subtimeline-empty">double-click or drag to add</div>
+          )}
+          {children.map(child => {
+            const x = msToPx(absStart + child.delay, containerWidth)
+            const lane = laneMap.get(child.id) ?? 0
+            const top = lane * LANE_HEIGHT + LANE_PAD
+            const bottom = (laneCount - lane - 1) * LANE_HEIGHT + LANE_PAD
+            const instLabel = instances[child.instance]?.label ?? child.instance?.slice(0, 6) ?? '?'
+            const isGroup = child.instance === 'internal' && child.action === 'action_group'
+            return (
+              <div
+                key={child.id}
+                className={`clip-block clip-block--child ${isGroup ? 'clip-block--group' : ''}`}
+                style={{ left: x, top, bottom, width: MIN_ACTION_WIDTH }}
+                onMouseDown={e => {
+                  e.preventDefault(); e.stopPropagation()
+                  const startAbsMs = absStart + child.delay
+                  const sx = e.clientX
+                  const onMove = (ev: MouseEvent) => {
+                    const newAbsMs = Math.max(0, snapToGrid(startAbsMs + (ev.clientX - sx) / ppm, snapMs))
+                    onChildActionMove?.(currentStepKey, triggerKey, path, child.id, Math.max(0, newAbsMs - absStart))
+                  }
+                  const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+                  window.addEventListener('mousemove', onMove)
+                  window.addEventListener('mouseup', onUp)
+                }}
+                onDragOver={isGroup ? (e => { if (e.dataTransfer.types.includes('application/companion-action')) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy' } }) : undefined}
+                onDrop={isGroup ? (e => {
+                  const raw = e.dataTransfer.getData('application/companion-action')
+                  if (!raw) return
+                  e.preventDefault(); e.stopPropagation()
+                  const childPath = [...path, child.id]
+                  const kids = child.children?.default ?? []
+                  const childMode = String(child.options?.execution_mode ?? 'concurrent')
+                  const delay = childMode === 'sequential' && kids.length > 0 ? Math.max(...kids.map(c => c.delay)) + 500 : 0
+                  onChildActionDrop?.(currentStepKey, triggerKey, childPath, JSON.parse(raw), delay)
+                }) : undefined}
+              >
+                <div className="clip-action" style={{ width: MIN_ACTION_WIDTH }}>
+                  {isGroup ? (
+                    <>
+                      <span className="action-name">Group</span>
+                      <select
+                        className="exec-mode-select"
+                        value={String(child.options?.execution_mode ?? 'concurrent')}
+                        onMouseDown={e => e.stopPropagation()}
+                        onChange={e => { e.stopPropagation(); onChildExecutionModeChange?.(currentStepKey, triggerKey, path, child.id, e.target.value as ExecutionMode) }}
+                      >
+                        <option value="concurrent">Concurrent</option>
+                        <option value="sequential">Sequential</option>
+                        <option value="inherit">Inherit</option>
+                      </select>
+                    </>
+                  ) : (
+                    <>
+                      <span className="action-name">{child.action || <em>new</em>}</span>
+                      <span className="action-instance">{instLabel}</span>
+                      {child.delay > 0 && <span className="action-delay">+{msToLabel(child.delay)}</span>}
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  const renderConcurrentList = (info: GroupInfo) => {
+    const { group, triggerKey, path, absStart, depth } = info
+    const children = group.children?.default ?? []
+    const mode = String(group.options?.execution_mode ?? 'concurrent')
+    const indent = depth * 8
+    return (
+      <div key={`conc-${group.id}`} className="concurrent-group-section" style={{ borderTopColor: DEPTH_BORDER[depth % DEPTH_BORDER.length], background: DEPTH_TINT[depth % DEPTH_TINT.length] }}>
+        <div className="concurrent-section-label" style={{ width: LABEL_WIDTH, paddingLeft: 10 + indent }}>
+          <span style={{ color: DEPTH_BORDER[depth % DEPTH_BORDER.length] }}>⇉ {mode === 'inherit' ? 'Inherit' : 'Concurrent'}</span>
+          <span className="track-label-sub">{msToLabel(absStart)}</span>
+        </div>
+        <div className="concurrent-section-body">
+          {children.map((child, idx) => {
+            const instLabel = instances[child.instance]?.label ?? child.instance?.slice(0, 6) ?? '?'
+            const isGroup = child.instance === 'internal' && child.action === 'action_group'
+            return (
+              <div
+                key={child.id}
+                className="concurrent-item"
+                draggable
+                onDragStart={e => { e.stopPropagation(); e.dataTransfer.setData('application/concurrent-reorder', JSON.stringify({ groupId: group.id, idx })); e.dataTransfer.effectAllowed = 'move' }}
+                onDragOver={e => { if (e.dataTransfer.types.includes('application/concurrent-reorder')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } }}
+                onDrop={e => {
+                  const raw = e.dataTransfer.getData('application/concurrent-reorder')
+                  if (!raw) return
+                  e.preventDefault()
+                  const { groupId, idx: fromIdx } = JSON.parse(raw)
+                  if (groupId === group.id && fromIdx !== idx)
+                    onChildActionReorder?.(currentStepKey, triggerKey, path, fromIdx, idx)
+                }}
+              >
+                <span className="concurrent-item-handle">⠿</span>
+                {isGroup ? (
+                  <>
+                    <span className="concurrent-item-name">Group</span>
+                    <select
+                      className="exec-mode-select"
+                      value={String(child.options?.execution_mode ?? 'concurrent')}
+                      onMouseDown={e => e.stopPropagation()}
+                      onChange={e => { e.stopPropagation(); onChildExecutionModeChange?.(currentStepKey, triggerKey, path, child.id, e.target.value as ExecutionMode) }}
+                    >
+                      <option value="concurrent">Concurrent</option>
+                      <option value="sequential">Sequential</option>
+                      <option value="inherit">Inherit</option>
+                    </select>
+                  </>
+                ) : (
+                  <><span className="concurrent-item-name">{child.action || '(new)'}</span><span className="concurrent-item-inst">{instLabel}</span></>
+                )}
+              </div>
+            )
+          })}
+          <div
+            className="concurrent-item-drop"
+            onDragOver={e => { if (e.dataTransfer.types.includes('application/companion-action')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' } }}
+            onDrop={e => {
+              const raw = e.dataTransfer.getData('application/companion-action')
+              if (!raw) return
+              e.preventDefault()
+              onChildActionDrop?.(currentStepKey, triggerKey, path, JSON.parse(raw), 0)
+            }}
+          >+ Drop action here</div>
+        </div>
+      </div>
+    )
+  }
+
   const hasAnyContent = !!selectedControl
 
   return (
@@ -519,6 +773,18 @@ export default function Timeline({
 
         {/* Selected button tracks */}
         {selectedTracks.map(({ triggerKey, actions }) => renderSelectedTrack(triggerKey, actions))}
+
+        {/* Group sub-timelines and lists — recursive, all nesting depths */}
+        {selectedTracks.flatMap(({ triggerKey, actions }) =>
+          collectGroups(actions, triggerKey, [], 0, 0)
+            .filter(info => String(info.group.options?.execution_mode ?? 'concurrent') === 'sequential')
+            .map(info => renderSequentialSubTrack(info))
+        )}
+        {selectedTracks.flatMap(({ triggerKey, actions }) =>
+          collectGroups(actions, triggerKey, [], 0, 0)
+            .filter(info => String(info.group.options?.execution_mode ?? 'concurrent') !== 'sequential')
+            .map(info => renderConcurrentList(info))
+        )}
 
         {!hasAnyContent && (
           <div className="timeline-empty">

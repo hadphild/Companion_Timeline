@@ -200,6 +200,45 @@ function normaliseSetId(setId) {
   return Number.isFinite(n) && String(n) === setId ? n : setId
 }
 
+// Add a single entity to Companion via tRPC, then recursively add its children.
+// Returns the number of entities successfully added (including children).
+async function pushEntity(ws, controlId, entityLocation, ownerId, entity) {
+  // ownerId is an object { parentId, childGroup } in Companion v5's schema — NOT a plain string.
+  const payload = {
+    controlId,
+    entityLocation,
+    ownerId: ownerId ? { parentId: ownerId, childGroup: 'default' } : null,
+    connectionId: entity.connectionId,
+    entityType: 'action',
+    entityDefinition: entity.definitionId,
+  }
+  console.log(`[pushEntity] add ${entity.definitionId} ownerId=${ownerId ?? 'null'} payload=${JSON.stringify(payload).slice(0, 300)}`)
+  const newId = await trpcCall(ws, 'mutation', 'controls.entities.add', payload)
+  console.log(`[pushEntity] result newId=${newId} for ${entity.definitionId}`)
+  if (!newId) {
+    console.warn(`[pushEntity] FAILED to add ${entity.definitionId} (ownerId=${ownerId ?? 'null'}) — entity will be missing in Companion live state`)
+    return 0
+  }
+
+  // Set options
+  for (const [key, val] of Object.entries(entity.options || {})) {
+    const raw = (val !== null && typeof val === 'object' && 'value' in val) ? val : wrapOptionValue(val)
+    await trpcCall(ws, 'mutation', 'controls.entities.setOption', {
+      controlId, entityLocation, entityId: newId, key, value: raw
+    })
+  }
+
+  // Recurse into children (action_group children keyed by set name, e.g. "default")
+  let count = 1
+  for (const [setKey, childActions] of Object.entries(entity.children || {})) {
+    console.log(`[pushEntity] pushing ${(childActions || []).length} children of ${entity.definitionId} (set="${setKey}")`)
+    for (const child of (childActions || [])) {
+      count += await pushEntity(ws, controlId, entityLocation, newId, child)
+    }
+  }
+  return count
+}
+
 async function pushSyncToCompanion(syncEntries) {
   await pushSyncToCompanionWithIdMap(syncEntries)
 }
@@ -265,23 +304,12 @@ async function pushSyncToCompanionWithIdMap(syncEntries) {
       await trpcCall(ws, 'mutation', 'controls.entities.remove', { controlId, entityLocation, entityId })
     }
 
-    // Add new entities in order, then set their options
+    // Add new entities (top-level and their nested children recursively)
+    console.log(`[CT] pushing ${newEntities.length} top-level entities for ${controlId} step=${companionStepId} set=${JSON.stringify(normaliseSetId(setId))}`)
+    console.log(`[CT] entity tree:`, JSON.stringify(newEntities, null, 2).slice(0, 1000))
     for (const entity of newEntities) {
-      const newId = await trpcCall(ws, 'mutation', 'controls.entities.add', {
-        controlId, entityLocation, ownerId: null,
-        connectionId: entity.connectionId,
-        entityType: 'action',
-        entityDefinition: entity.definitionId
-      })
-      if (!newId) { failed++; continue }
-      added++
-
-      for (const [key, val] of Object.entries(entity.options || {})) {
-        const raw = (val !== null && typeof val === 'object' && 'value' in val) ? val : wrapOptionValue(val)
-        await trpcCall(ws, 'mutation', 'controls.entities.setOption', {
-          controlId, entityLocation, entityId: newId, key, value: raw
-        })
-      }
+      const n = await pushEntity(ws, controlId, entityLocation, null, entity)
+      if (n === 0) failed++; else added += n
     }
     sets++
   }

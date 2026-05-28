@@ -2079,37 +2079,166 @@ html, body, #root {
   color: var(--accent);
 }
 
-/* ── Group node — purple card ── */
-.ne-group {
+/* ── Group header node — compact mode pill ── */
+.ne-group-hdr {
   background: #1a1230;
   border: 1.5px solid #3a2a5a;
-  padding: 8px 12px;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 20px;
+  min-width: 160px !important;
 }
 
-.ne-group--selected {
+.ne-group-hdr--selected {
   border-color: var(--accent) !important;
   background: #2b1f00;
   box-shadow: 0 0 0 1px var(--accent);
 }
 
-.ne-group-mode {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.ne-group-hdr-icon {
+  font-size: 13px;
   color: #a87fea;
-  margin-bottom: 4px;
 }
 
-.ne-group-label {
+.ne-group-hdr-label {
   font-size: 11px;
-  font-weight: 500;
-  color: var(--text);
-  margin-bottom: 3px;
+  font-weight: 600;
+  color: #c4a0f0;
 }
 
-.ne-group-count {
-  font-size: 10px;
-  color: var(--text3);
+/* ── Child action node — read-only, dashed border ── */
+.ne-child-action {
+  background: #232323;
+  border: 1.5px dashed #3a3a3a;
+  padding: 6px 10px;
+  opacity: 0.8;
+  min-width: 160px !important;
 }
 .context-menu-item--danger:hover { background: rgba(248,113,113,0.12); }
+
+/* ── Sequential group sub-timeline ──────────────────────────────────────────── */
+.track-row--subtimeline {
+  background: rgba(74, 158, 255, 0.04);
+  border-top: 1px dashed rgba(74, 158, 255, 0.25);
+}
+
+.track-label--subtimeline .track-label-text {
+  color: var(--blue);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.subtimeline-empty {
+  position: absolute;
+  top: 50%;
+  left: 20px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: var(--text3);
+  pointer-events: none;
+  font-style: italic;
+}
+
+.subtimeline-start-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(74, 158, 255, 0.35);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.clip-block--child {
+  background: #2a3f5f;
+  border-color: #3a5a8a;
+  opacity: 0.9;
+  cursor: grab;
+}
+.clip-block--child:active { cursor: grabbing; }
+
+/* ── Concurrent group list ───────────────────────────────────────────────────── */
+.concurrent-group-section {
+  display: flex;
+  align-items: stretch;
+  border-top: 1px dashed rgba(168, 127, 234, 0.3);
+  background: rgba(168, 127, 234, 0.04);
+  flex-shrink: 0;
+  min-height: 40px;
+}
+
+.concurrent-section-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4px 6px 4px 10px;
+  border-right: 1px solid var(--border2);
+  font-size: 11px;
+  color: #a87fea;
+  font-weight: 600;
+  flex-shrink: 0;
+  gap: 1px;
+}
+
+.concurrent-section-body {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px;
+  align-items: center;
+}
+
+.concurrent-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: grab;
+  user-select: none;
+  transition: border-color 0.1s;
+}
+.concurrent-item:hover { border-color: var(--border); }
+.concurrent-item:active { cursor: grabbing; }
+
+.concurrent-item-handle {
+  color: var(--text3);
+  font-size: 12px;
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.concurrent-item-name {
+  color: var(--text);
+  font-weight: 500;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.concurrent-item-inst {
+  color: var(--text3);
+  font-size: 10px;
+}
+
+.concurrent-item-drop {
+  border: 1px dashed var(--border2);
+  border-radius: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--text3);
+  cursor: default;
+  transition: border-color 0.1s, color 0.1s;
+}
+.concurrent-item-drop:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

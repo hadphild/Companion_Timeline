@@ -6,12 +6,19 @@ import {
   Controls,
   BackgroundVariant,
   type Node,
+  type Edge,
+  type NodeChange,
+  type Connection,
   Handle,
   Position,
   type NodeProps,
   useNodesState,
   useEdgesState,
   useReactFlow,
+  MarkerType,
+  addEdge,
+  reconnectEdge,
+  applyNodeChanges,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import {
@@ -67,19 +74,31 @@ function WaitNode({ data }: NodeProps) {
   )
 }
 
-function GroupNode({ data }: NodeProps) {
+// Group header — compact badge showing the mode, children expanded below it
+function GroupHeaderNode({ data }: NodeProps) {
   const d = data as unknown as GroupData
   const modeLabel =
     d.mode === 'sequential' ? 'Sequential' :
     d.mode === 'concurrent' ? 'Concurrent' : 'Inherit'
+  const icon = d.mode === 'sequential' ? '↓' : '⇉'
   return (
-    <div className={`ne-node ne-group${d.isSelected ? ' ne-group--selected' : ''}`}>
+    <div className={`ne-node ne-group-hdr${d.isSelected ? ' ne-group-hdr--selected' : ''}`}>
       <Handle type="target" position={Position.Top} />
-      <div className="ne-group-mode">{modeLabel}</div>
-      <div className="ne-group-label">Action Group</div>
-      <div className="ne-group-count">
-        {d.childCount} action{d.childCount !== 1 ? 's' : ''}
-      </div>
+      <span className="ne-group-hdr-icon">{icon}</span>
+      <span className="ne-group-hdr-label">{modeLabel} Group</span>
+      <Handle type="source" position={Position.Bottom} />
+    </div>
+  )
+}
+
+// Child action — read-only, dimmer than top-level actions
+function ChildActionNode({ data }: NodeProps) {
+  const d = data as unknown as ActionData
+  return (
+    <div className="ne-node ne-child-action">
+      <Handle type="target" position={Position.Top} />
+      <div className="ne-action-name">{d.action.action || '(new)'}</div>
+      <div className="ne-action-inst">{d.instanceLabel}</div>
       <Handle type="source" position={Position.Bottom} />
     </div>
   )
@@ -89,17 +108,19 @@ const nodeTypes = {
   trigger: TriggerNode,
   action: ActionNode,
   wait: WaitNode,
-  group: GroupNode,
+  'group-header': GroupHeaderNode,
+  'child-action': ChildActionNode,
 }
 
 // ---- Layout constants ----
 const COL_WIDTH = 200
 const COL_GAP   = 100
-const TRIGGER_H = 52
-const ACTION_H  = 72
-const WAIT_H    = 42
-const GROUP_H   = 90
-const NODE_GAP  = 32
+const TRIGGER_H    = 52
+const ACTION_H     = 72
+const WAIT_H       = 42
+const GROUP_HDR_H  = 42
+const NODE_GAP     = 32
+const CHILD_OFFSET = COL_WIDTH + 60  // x offset for child nodes
 
 // ---- Build graph from ButtonControl ----
 
@@ -108,11 +129,12 @@ function buildGraph(
   stepKey: string,
   instances: Record<string, CompanionInstance>,
   selectedActionId: string | null
-): { nodes: Node[] } {
+): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = []
+  const edges: Edge[] = []
 
   const step = control.steps[stepKey]
-  if (!step) return { nodes }
+  if (!step) return { nodes, edges }
 
   const triggerKeys = Object.keys(step.action_sets)
   const STANDARD = ['down', 'up', 'rotate_left', 'rotate_right']
@@ -133,6 +155,7 @@ function buildGraph(
       type: 'trigger',
       position: { x: colX, y },
       data: { label: triggerLabel(triggerKey), triggerKey, stepKey } as Record<string, unknown>,
+      deletable: false,
     })
     y += TRIGGER_H + NODE_GAP
 
@@ -145,6 +168,13 @@ function buildGraph(
           position: { x: colX, y },
           data: { ms: action.delay - prevDelay } as Record<string, unknown>,
         })
+        edges.push({
+          id: `e-${prevId}-${waitId}`,
+          source: prevId,
+          target: waitId,
+          style: { stroke: '#4a4a4a' },
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#4a4a4a' },
+        })
         y += WAIT_H + NODE_GAP
         prevId = waitId
       }
@@ -155,17 +185,54 @@ function buildGraph(
       const isSelected = action.id === selectedActionId
 
       if (isGroup) {
+        const mode = String(action.options?.execution_mode ?? 'concurrent')
+        const children = [...(action.children?.default ?? [])].sort((a, b) => a.delay - b.delay)
+        const childX = colX + CHILD_OFFSET
+
+        // Group header node — marks start of the group in the main flow
         nodes.push({
           id: nodeId,
-          type: 'group',
+          type: 'group-header',
           position: { x: colX, y },
-          data: {
-            action, triggerKey, stepKey, isSelected,
-            childCount: action.children?.default?.length ?? 0,
-            mode: String(action.options?.execution_mode ?? 'concurrent'),
-          } as Record<string, unknown>,
+          data: { action, triggerKey, stepKey, isSelected, mode, childCount: children.length } as Record<string, unknown>,
         })
-        y += GROUP_H + NODE_GAP
+        y += GROUP_HDR_H + NODE_GAP
+
+        if (mode === 'sequential') {
+          // Children chained vertically to the right of the main column
+          let childY = y - NODE_GAP
+          let childPrevId = nodeId
+          let childPrevDelay = 0
+
+          for (const child of children) {
+            if (child.delay > childPrevDelay) {
+              const wid = `child-wait-${child.id}`
+              nodes.push({ id: wid, type: 'wait', position: { x: childX, y: childY }, data: { ms: child.delay - childPrevDelay } as Record<string, unknown> })
+              edges.push({ id: `e-${childPrevId}-${wid}`, source: childPrevId, target: wid, data: { childEdge: true }, style: { stroke: '#3a3a3a' }, markerEnd: { type: MarkerType.ArrowClosed, color: '#3a3a3a' } })
+              childY += WAIT_H + NODE_GAP
+              childPrevId = wid
+            }
+            const cid = `child-${child.id}`
+            const cInstLabel = instances[child.instance]?.label ?? (child.instance?.slice(0, 8) ?? '?')
+            nodes.push({ id: cid, type: 'child-action', position: { x: childX, y: childY }, data: { action: child, triggerKey, stepKey, instanceLabel: cInstLabel, isSelected: false } as Record<string, unknown>, deletable: false })
+            edges.push({ id: `e-${childPrevId}-${cid}`, source: childPrevId, target: cid, data: { childEdge: true }, style: { stroke: '#3a3a3a' }, markerEnd: { type: MarkerType.ArrowClosed, color: '#3a3a3a' } })
+            childY += ACTION_H + NODE_GAP
+            childPrevId = cid
+            childPrevDelay = child.delay
+          }
+          // Main column y must clear the child area
+          y = Math.max(y, childY)
+
+        } else {
+          // Concurrent/Inherit: children fan out horizontally to the right
+          children.forEach((child, ci) => {
+            const cid = `child-${child.id}`
+            const cInstLabel = instances[child.instance]?.label ?? (child.instance?.slice(0, 8) ?? '?')
+            nodes.push({ id: cid, type: 'child-action', position: { x: childX + ci * (COL_WIDTH + NODE_GAP), y: y - NODE_GAP }, data: { action: child, triggerKey, stepKey, instanceLabel: cInstLabel, isSelected: false } as Record<string, unknown>, deletable: false })
+            edges.push({ id: `e-${nodeId}-${cid}`, source: nodeId, target: cid, data: { childEdge: true }, style: { stroke: '#3a3a3a' }, markerEnd: { type: MarkerType.ArrowClosed, color: '#3a3a3a' } })
+          })
+          y += ACTION_H + NODE_GAP
+        }
       } else {
         nodes.push({
           id: nodeId,
@@ -176,12 +243,53 @@ function buildGraph(
         y += ACTION_H + NODE_GAP
       }
 
+      edges.push({
+        id: `e-${prevId}-${nodeId}`,
+        source: prevId,
+        target: nodeId,
+        style: { stroke: '#4a4a4a' },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#4a4a4a' },
+      })
+
       prevId = nodeId
       prevDelay = action.delay
     }
   })
 
-  return { nodes }
+  return { nodes, edges }
+}
+
+// ---- Derive action list from graph topology ----
+// Walks edges from a trigger node, accumulating delay through Wait nodes.
+
+function deriveActions(
+  nodes: Node[],
+  edges: Edge[],
+  triggerNodeId: string
+): CompanionAction[] {
+  // Exclude child edges (they branch off group headers, not part of main flow)
+  const mainEdges = edges.filter(e => !(e.data as Record<string, unknown>)?.childEdge)
+  const nextOf = new Map(mainEdges.map(e => [e.source, e.target]))
+  const actions: CompanionAction[] = []
+  let currentId = triggerNodeId
+  let delay = 0
+  const visited = new Set<string>([triggerNodeId])
+
+  while (nextOf.has(currentId)) {
+    const nextId = nextOf.get(currentId)!
+    if (visited.has(nextId)) break
+    visited.add(nextId)
+    currentId = nextId
+    const node = nodes.find(n => n.id === nextId)
+    if (!node) break
+    if (node.type === 'wait') {
+      delay += (node.data as unknown as WaitData).ms
+    } else if (node.type === 'action' || node.type === 'group-header') {
+      const d = node.data as unknown as ActionData
+      actions.push({ ...d.action, delay })
+    }
+  }
+  return actions
 }
 
 // ---- Props ----
@@ -192,6 +300,8 @@ interface Props {
   selectedActionId: string | null
   onActionSelect: (actionId: string | null, triggerKey: TriggerKey, stepKey: string) => void
   onActionDrop?: (stepKey: string, triggerKey: TriggerKey, delay: number, template: { connectionId: string; definitionId: string; options: Record<string, unknown> }) => void
+  onActionDelete?: (stepKey: string, triggerKey: TriggerKey, actionId: string) => void
+  onActionsUpdate?: (stepKey: string, triggerKey: TriggerKey, actions: CompanionAction[]) => void
   onStepAdd: () => void
   onStepRemove: (stepKey: string) => void
 }
@@ -204,6 +314,8 @@ function NodeEditorInner({
   selectedActionId,
   onActionSelect,
   onActionDrop,
+  onActionDelete,
+  onActionsUpdate,
   onStepAdd,
   onStepRemove,
 }: Props) {
@@ -225,20 +337,21 @@ function NodeEditorInner({
     ] as TriggerKey[]
   }, [control, currentStepKey])
 
-  const { nodes: builtNodes } = useMemo(
+  const { nodes: builtNodes, edges: builtEdges } = useMemo(
     () =>
       control
         ? buildGraph(control, currentStepKey, instances, selectedActionId)
-        : { nodes: [] },
+        : { nodes: [], edges: [] },
     [control, currentStepKey, instances, selectedActionId]
   )
 
   const [nodes, setNodes, onNodesChange] = useNodesState(builtNodes)
-  const [, , onEdgesChange] = useEdgesState([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState(builtEdges)
 
   useEffect(() => {
     setNodes(builtNodes)
-  }, [builtNodes, setNodes])
+    setEdges(builtEdges)
+  }, [builtNodes, builtEdges, setNodes, setEdges])
 
   const handleNodeClick = useCallback(
     (_evt: React.MouseEvent, node: Node) => {
@@ -302,6 +415,63 @@ function NodeEditorInner({
     onActionDrop?.(currentStepKey, targetTrigger, delay, template)
   }, [control, nodes, ordered, currentStepKey, screenToFlowPosition, onActionDrop])
 
+  // Helper: re-derive all trigger action lists from current nodes+edges and push updates
+  const pushGraphUpdate = useCallback((currentNodes: Node[], currentEdges: Edge[]) => {
+    if (!control) return
+    const triggerNodes = currentNodes.filter(n => n.type === 'trigger')
+    for (const tn of triggerNodes) {
+      const d = tn.data as unknown as TriggerData
+      const newActions = deriveActions(currentNodes, currentEdges, tn.id)
+      onActionsUpdate?.(d.stepKey, d.triggerKey, newActions)
+    }
+  }, [control, onActionsUpdate])
+
+  // Intercept node changes — handle deletes before the node leaves state
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    const removes = changes.filter(c => c.type === 'remove')
+
+    if (removes.length > 0 && control) {
+      const removedIds = new Set(removes.map(c => (c as { type: 'remove'; id: string }).id))
+      const remainingNodes = nodes.filter(n => !removedIds.has(n.id))
+      const remainingEdges = edges.filter(e => !removedIds.has(e.source) && !removedIds.has(e.target))
+
+      let hasWait = false
+      for (const id of removedIds) {
+        const node = nodes.find(n => n.id === id)
+        if (!node) continue
+        if (node.type === 'action' || node.type === 'group') {
+          const d = node.data as unknown as ActionData
+          onActionDelete?.(d.stepKey, d.triggerKey, d.action.id)
+        } else if (node.type === 'wait') {
+          hasWait = true
+        }
+      }
+      // Wait deletions need full re-derive (delays shift)
+      if (hasWait) pushGraphUpdate(remainingNodes, remainingEdges)
+    }
+
+    // Always apply positional/selection/etc. changes to React Flow state
+    setNodes(n => applyNodeChanges(changes, n))
+  }, [control, nodes, edges, onActionDelete, pushGraphUpdate, setNodes])
+
+  // Reconnect an existing edge endpoint to a new node
+  const handleReconnect = useCallback((oldEdge: Edge, newConnection: Connection) => {
+    const newEdges = reconnectEdge(oldEdge, newConnection, edges)
+    setEdges(newEdges)
+    pushGraphUpdate(nodes, newEdges)
+  }, [edges, nodes, setEdges, pushGraphUpdate])
+
+  // Create a new connection between nodes
+  const handleConnect = useCallback((connection: Connection) => {
+    const newEdges = addEdge({
+      ...connection,
+      style: { stroke: '#4a4a4a' },
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#4a4a4a' },
+    }, edges)
+    setEdges(newEdges)
+    pushGraphUpdate(nodes, newEdges)
+  }, [edges, nodes, setEdges, pushGraphUpdate])
+
   if (!control) {
     return (
       <div className="ne-empty">
@@ -346,15 +516,18 @@ function NodeEditorInner({
         )}
         <ReactFlow
           nodes={nodes}
-          edges={[]}
-          onNodesChange={onNodesChange}
+          edges={edges}
+          onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
           onNodeClick={handleNodeClick}
+          onReconnect={handleReconnect}
+          onConnect={handleConnect}
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={{ padding: 0.15 }}
           colorMode="dark"
-          deleteKeyCode={null}
+          deleteKeyCode={['Backspace', 'Delete']}
+          edgesReconnectable
         >
           <Background variant={BackgroundVariant.Dots} color="#2a2a2a" gap={20} size={1} />
           <Controls showInteractive={false} />
