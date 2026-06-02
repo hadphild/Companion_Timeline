@@ -893,18 +893,25 @@ html, body, #root {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--track-bg);
   user-select: none;
   position: relative;
 }
+
+.timeline::-webkit-scrollbar { width: 6px; }
+.timeline::-webkit-scrollbar-track { background: transparent; }
+.timeline::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
 
 .timeline-ruler {
   display: flex;
   background: var(--ruler-bg);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .ruler-track-label {
@@ -2139,6 +2146,56 @@ html, body, #root {
   color: var(--text3);
   pointer-events: none;
   font-style: italic;
+}
+
+/* Collapse toggle button on sub-timelines and concurrent lists */
+.track-collapse-btn {
+  background: none;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 0 4px 0 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.track-collapse-btn:hover { color: var(--text2); }
+
+/* Collapsed row — minimal height */
+.track-row--collapsed {
+  height: 22px !important;
+  align-items: center;
+  display: flex;
+}
+.track-row--collapsed .track-label--subtimeline {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+}
+
+.concurrent-group-section--collapsed {
+  min-height: 24px;
+  align-items: center;
+}
+.concurrent-group-section--collapsed .concurrent-section-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 10px;
+}
+
+/* Zoom buttons in step bar */
+.zoom-btn {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+.zoom-btn--fit {
+  font-size: 10px;
+  font-weight: 600;
+  width: auto !important;
+  padding: 0 7px;
 }
 
 .subtimeline-start-line {

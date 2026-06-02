@@ -159,6 +159,15 @@ export default function Timeline({
     x: number; y: number; stepKey: string; triggerKey: TriggerKey; actionId: string
   } | null>(null)
   const [dropTarget, setDropTarget] = useState<{ triggerKey: TriggerKey; x: number } | null>(null)
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -194,6 +203,28 @@ export default function Timeline({
     }
     return result
   }, [selectedControl, currentStepKey])
+
+  const handleZoomIn  = useCallback(() => setVisibleMs(v => Math.max(MIN_ZOOM_MS, Math.round(v * 0.6))), [])
+  const handleZoomOut = useCallback(() => setVisibleMs(v => Math.min(MAX_ZOOM_MS, Math.round(v * 1.6))), [])
+  const handleZoomFit = useCallback(() => {
+    if (!selectedControl) return
+    let maxMs = 500
+    for (const step of Object.values(selectedControl.steps)) {
+      for (const actions of Object.values(step.action_sets)) {
+        for (const a of (actions ?? [])) {
+          if (a.delay > maxMs) maxMs = a.delay
+          for (const kids of Object.values(a.children ?? {})) {
+            for (const c of (kids ?? [])) {
+              const abs = a.delay + c.delay
+              if (abs > maxMs) maxMs = abs
+            }
+          }
+        }
+      }
+    }
+    setVisibleMs(Math.max(MIN_ZOOM_MS, Math.min(MAX_ZOOM_MS, Math.round(maxMs * 1.2 + 300))))
+    setScrollMs(0)
+  }, [selectedControl])
 
   const pxPerMs = useCallback((w: number) => w / visibleMs, [visibleMs])
   const msToPx = useCallback((ms: number, w: number) => (ms - scrollMs) * pxPerMs(w), [scrollMs, pxPerMs])
@@ -339,6 +370,22 @@ export default function Timeline({
   const renderSelectedTrack = (triggerKey: TriggerKey, actions: CompanionAction[]) => {
     const isHoldTrack = !['down','up','rotate_left','rotate_right'].includes(triggerKey)
     const hasGroups = actions.some(a => a.instance === 'internal' && a.action === 'action_group')
+    const trackCollapseKey = `track-${currentStepKey}-${triggerKey}`
+    const isTrackCollapsed = collapsedGroups.has(trackCollapseKey)
+
+    if (isTrackCollapsed) {
+      return (
+        <div key={triggerKey} className="track-row track-row--collapsed" style={{ display: 'flex', alignItems: 'center' }}>
+          <div className="track-label" style={{ width: LABEL_WIDTH }}>
+            <button className="track-collapse-btn" onClick={() => toggleCollapse(trackCollapseKey)}>▶</button>
+            <span className="track-label-text">{triggerLabel(triggerKey)}</span>
+            <span className="track-label-sub">{actions.length} action{actions.length !== 1 ? 's' : ''}</span>
+          </div>
+          <div style={{ flex: 1, borderTop: '1px solid var(--border)' }} />
+        </div>
+      )
+    }
+
     const sorted = [...actions].sort((a, b) => a.delay - b.delay)
     const nextAction = new Map<string, CompanionAction>()
     for (let i = 0; i < sorted.length - 1; i++) nextAction.set(sorted[i].id, sorted[i + 1])
@@ -361,6 +408,7 @@ export default function Timeline({
     return (
       <div key={triggerKey} className="track-row" style={{ height: trackHeight }}>
         <div className="track-label" style={{ width: LABEL_WIDTH }}>
+          <button className="track-collapse-btn" onClick={() => toggleCollapse(trackCollapseKey)}>▼</button>
           <span className="track-label-text">{triggerLabel(triggerKey)}</span>
           <div className="track-label-meta">
             {hasGroups && <span className="track-mode-badge" title="Track contains Action Groups">GRP</span>}
@@ -521,7 +569,24 @@ export default function Timeline({
 
   const renderSequentialSubTrack = (info: GroupInfo) => {
     const { group, triggerKey, path, absStart, depth } = info
+    const collapsed = collapsedGroups.has(group.id)
+    const tint   = DEPTH_TINT[depth % DEPTH_TINT.length]
+    const border = DEPTH_BORDER[depth % DEPTH_BORDER.length]
+    const indent = depth * 8
     const children = [...(group.children?.default ?? [])].sort((a, b) => a.delay - b.delay)
+
+    if (collapsed) {
+      return (
+        <div key={`sub-${group.id}`} className="track-row track-row--subtimeline track-row--collapsed" style={{ background: tint, borderTopColor: border }}>
+          <div className="track-label track-label--subtimeline" style={{ width: LABEL_WIDTH, paddingLeft: 10 + indent }}>
+            <button className="track-collapse-btn" onClick={() => toggleCollapse(group.id)}>▶</button>
+            <span className="track-label-text" style={{ color: border }}>↓ Sequential</span>
+            <span className="track-label-sub">{children.length} action{children.length !== 1 ? 's' : ''}</span>
+          </div>
+          <div style={{ flex: 1 }} />
+        </div>
+      )
+    }
     const ppm = pxPerMs(containerWidth)
     const absChildren = children.map(c => ({ ...c, delay: absStart + c.delay }))
     const laneAssignments = assignLanes(absChildren, ms => ms * ppm, () => MIN_ACTION_WIDTH)
@@ -529,20 +594,16 @@ export default function Timeline({
     const laneCount = Math.max(1, ...laneAssignments.map(l => l.lane + 1))
     const trackHeight = laneCount * LANE_HEIGHT
     const startX = msToPx(absStart, containerWidth)
-    const indent = depth * 8
 
     return (
       <div
         key={`sub-${group.id}`}
         className="track-row track-row--subtimeline"
-        style={{
-          height: trackHeight,
-          background: DEPTH_TINT[depth % DEPTH_TINT.length],
-          borderTopColor: DEPTH_BORDER[depth % DEPTH_BORDER.length],
-        }}
+        style={{ height: trackHeight, background: tint, borderTopColor: border }}
       >
         <div className="track-label track-label--subtimeline" style={{ width: LABEL_WIDTH, paddingLeft: 10 + indent }}>
-          <span className="track-label-text" style={{ color: DEPTH_BORDER[depth % DEPTH_BORDER.length] }}>
+          <button className="track-collapse-btn" onClick={() => toggleCollapse(group.id)}>▼</button>
+          <span className="track-label-text" style={{ color: border }}>
             {'↓'.repeat(depth + 1)} Sequential
           </span>
           <span className="track-label-sub">{msToLabel(absStart)}+</span>
@@ -641,13 +702,31 @@ export default function Timeline({
 
   const renderConcurrentList = (info: GroupInfo) => {
     const { group, triggerKey, path, absStart, depth } = info
+    const collapsed = collapsedGroups.has(group.id)
     const children = group.children?.default ?? []
     const mode = String(group.options?.execution_mode ?? 'concurrent')
     const indent = depth * 8
+    const tint   = DEPTH_TINT[depth % DEPTH_TINT.length]
+    const border = DEPTH_BORDER[depth % DEPTH_BORDER.length]
+    const modeLabel = mode === 'inherit' ? 'Inherit' : 'Concurrent'
+
+    if (collapsed) {
+      return (
+        <div key={`conc-${group.id}`} className="concurrent-group-section concurrent-group-section--collapsed" style={{ borderTopColor: border, background: tint }}>
+          <div className="concurrent-section-label" style={{ width: LABEL_WIDTH, paddingLeft: 10 + indent }}>
+            <button className="track-collapse-btn" onClick={() => toggleCollapse(group.id)}>▶</button>
+            <span style={{ color: border }}>⇉ {modeLabel}</span>
+            <span className="track-label-sub">{children.length} action{children.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+      )
+    }
+
     return (
-      <div key={`conc-${group.id}`} className="concurrent-group-section" style={{ borderTopColor: DEPTH_BORDER[depth % DEPTH_BORDER.length], background: DEPTH_TINT[depth % DEPTH_TINT.length] }}>
+      <div key={`conc-${group.id}`} className="concurrent-group-section" style={{ borderTopColor: border, background: tint }}>
         <div className="concurrent-section-label" style={{ width: LABEL_WIDTH, paddingLeft: 10 + indent }}>
-          <span style={{ color: DEPTH_BORDER[depth % DEPTH_BORDER.length] }}>⇉ {mode === 'inherit' ? 'Inherit' : 'Concurrent'}</span>
+          <button className="track-collapse-btn" onClick={() => toggleCollapse(group.id)}>▼</button>
+          <span style={{ color: border }}>⇉ {modeLabel}</span>
           <span className="track-label-sub">{msToLabel(absStart)}</span>
         </div>
         <div className="concurrent-section-body">
@@ -745,6 +824,13 @@ export default function Timeline({
               <button className="step-tab step-tab--remove" onClick={() => setAddingHold(false)}>✕</button>
             </div>
           )}
+
+          <div className="step-bar-divider" />
+
+          <span className="step-bar-label">Zoom</span>
+          <button className="step-tab zoom-btn" title="Zoom in (or ⌘ scroll)" onClick={handleZoomIn}>+</button>
+          <button className="step-tab zoom-btn" title="Zoom out (or ⌘ scroll)" onClick={handleZoomOut}>−</button>
+          <button className="step-tab zoom-btn zoom-btn--fit" title="Fit all actions" onClick={handleZoomFit}>Fit</button>
         </div>
       )}
 
