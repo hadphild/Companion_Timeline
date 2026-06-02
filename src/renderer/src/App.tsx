@@ -643,6 +643,30 @@ export default function App() {
     return sorted[idx + 1].delay - selectedActionData.delay
   }, [selectedControl, selectedAction, selectedActionData])
 
+  // Apply an option value to every action with the same action+instance on this button
+  const handleSyncOptionToAll = useCallback(
+    (key: string, value: unknown) => {
+      if (!selectedButtonKey || !selectedActionData) return
+      const { action: actionId, instance: instanceId, id: selfId } = selectedActionData
+      updateButton(selectedButtonKey, (ctrl) => {
+        const newSteps: typeof ctrl.steps = {}
+        for (const [sk, step] of Object.entries(ctrl.steps)) {
+          const newSets: typeof step.action_sets = {}
+          for (const [tk, actions] of Object.entries(step.action_sets)) {
+            newSets[tk] = (actions ?? []).map(a =>
+              a.id !== selfId && a.action === actionId && a.instance === instanceId
+                ? { ...a, options: { ...a.options, [key]: value } }
+                : a
+            )
+          }
+          newSteps[sk] = { ...step, action_sets: newSets }
+        }
+        return { ...ctrl, steps: newSteps }
+      })
+    },
+    [selectedButtonKey, selectedActionData, updateButton]
+  )
+
   const handleSetWaitAfter = useCallback((ms: number) => {
     if (!selectedButtonKey || !selectedAction) return
     updateButton(selectedButtonKey, (ctrl) => {
@@ -1220,6 +1244,7 @@ export default function App() {
                     selectedAction.id
                   )
                 }
+                onSyncOptionToAll={handleSyncOptionToAll}
               />
             </div>
           ) : (

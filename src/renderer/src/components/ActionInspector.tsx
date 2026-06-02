@@ -12,6 +12,7 @@ interface Props {
   onSetWaitAfter: (ms: number) => void
   onAddActionAfter: (delayMs: number) => void
   onDelete: () => void
+  onSyncOptionToAll?: (key: string, value: unknown) => void
 }
 
 export default function ActionInspector({
@@ -24,7 +25,8 @@ export default function ActionInspector({
   onChange,
   onSetWaitAfter,
   onAddActionAfter,
-  onDelete
+  onDelete,
+  onSyncOptionToAll,
 }: Props) {
   const instance = instances[action.instance]
 
@@ -240,11 +242,20 @@ export default function ActionInspector({
               <span className="inspector-opt-label">{key}</span>
               <button className="inspector-remove-opt" onClick={() => removeOption(key)} title="Remove">×</button>
             </div>
-            <input
-              className="inspector-input"
-              value={String(val ?? '')}
-              onChange={e => handleOption(key, e.target.value)}
-            />
+            <div className="inspector-input-row">
+              <input
+                className="inspector-input"
+                value={String(val ?? '')}
+                onChange={e => handleOption(key, e.target.value)}
+              />
+              {onSyncOptionToAll && (
+                <button
+                  className="inspector-sync-opt"
+                  title={`Apply ${key} = ${val} to all "${action.action}" actions on this button`}
+                  onClick={() => onSyncOptionToAll(key, val)}
+                >≡</button>
+              )}
+            </div>
           </div>
         ))}
         <div className="inspector-row inspector-option-add-row">

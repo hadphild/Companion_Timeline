@@ -83,10 +83,10 @@ const MIN_WAIT_PX = 54
 
 const STANDARD_TRIGGERS: TriggerKey[] = ['down', 'up']
 
-function assignLanes(
-  actions: { id: string; delay: number; action: string }[],
+function assignLanes<T extends { id: string; delay: number; action: string }>(
+  actions: T[],
   msToPx: (ms: number) => number,
-  getWidth?: (a: { id: string; delay: number; action: string }) => number
+  getWidth?: (a: T) => number
 ): { id: string; lane: number }[] {
   const laneEdge: number[] = []
   const result: { id: string; lane: number }[] = []
@@ -103,6 +103,18 @@ function assignLanes(
     if (!placed) { result.push({ id: a.id, lane: laneEdge.length }); laneEdge.push(right) }
   }
   return result
+}
+
+// Returns the duration in ms from timeout/duration option, or null if not present.
+function getActionDurationMs(action: CompanionAction): number | null {
+  for (const key of ['timeout', 'duration']) {
+    const v = action.options?.[key]
+    if (v != null && v !== '') {
+      const n = Number(v)
+      if (!isNaN(n) && n > 0) return n
+    }
+  }
+  return null
 }
 
 function msToLabel(ms: number): string {
@@ -208,21 +220,22 @@ export default function Timeline({
   const handleZoomOut = useCallback(() => setVisibleMs(v => Math.min(MAX_ZOOM_MS, Math.round(v * 1.6))), [])
   const handleZoomFit = useCallback(() => {
     if (!selectedControl) return
-    let maxMs = 500
-    for (const step of Object.values(selectedControl.steps)) {
-      for (const actions of Object.values(step.action_sets)) {
-        for (const a of (actions ?? [])) {
-          if (a.delay > maxMs) maxMs = a.delay
-          for (const kids of Object.values(a.children ?? {})) {
-            for (const c of (kids ?? [])) {
-              const abs = a.delay + c.delay
-              if (abs > maxMs) maxMs = abs
-            }
-          }
-        }
+    // Use end time = start + timeout (if present), so the bar tail is included
+    let maxEndMs = MIN_ZOOM_MS
+    const actionEnd = (a: CompanionAction, parentDelayMs = 0) => {
+      const absStart = parentDelayMs + a.delay
+      const dur = getActionDurationMs(a) ?? 0
+      maxEndMs = Math.max(maxEndMs, absStart + dur)
+      for (const kids of Object.values(a.children ?? {})) {
+        for (const c of kids ?? []) actionEnd(c, absStart)
       }
     }
-    setVisibleMs(Math.max(MIN_ZOOM_MS, Math.min(MAX_ZOOM_MS, Math.round(maxMs * 1.2 + 300))))
+    for (const step of Object.values(selectedControl.steps))
+      for (const actions of Object.values(step.action_sets))
+        for (const a of actions ?? []) actionEnd(a)
+
+    // Add ~15% padding so the last clip block isn't flush against the right edge
+    setVisibleMs(Math.max(MIN_ZOOM_MS, Math.min(MAX_ZOOM_MS, Math.round(maxEndMs * 1.15 + 400))))
     setScrollMs(0)
   }, [selectedControl])
 
@@ -400,7 +413,10 @@ export default function Timeline({
     }
     const totalWidth = (action: CompanionAction) => MIN_ACTION_WIDTH + waitPx(action)
 
-    const laneAssignments = assignLanes(actions, ms => ms * ppm, () => MIN_ACTION_WIDTH)
+    const laneAssignments = assignLanes(actions, ms => ms * ppm, (a) => {
+      const dur = getActionDurationMs(a)
+      return dur ? Math.max(MIN_ACTION_WIDTH, Math.round(dur * ppm)) : MIN_ACTION_WIDTH
+    })
     const laneMap = new Map(laneAssignments.map(({ id, lane }) => [id, lane]))
     const laneCount = Math.max(1, ...laneAssignments.map(l => l.lane + 1))
     const trackHeight = laneCount * LANE_HEIGHT
@@ -445,12 +461,14 @@ export default function Timeline({
             const isGroup = action.instance === 'internal' && action.action === 'action_group'
             const execMode = isGroup ? String(action.options?.execution_mode ?? 'concurrent') : null
             const childCount = isGroup ? (action.children?.default?.length ?? 0) : 0
+            const durationMs = !isGroup ? getActionDurationMs(action) : null
+            const durationPx = durationMs ? Math.max(0, Math.round(durationMs * ppm) - MIN_ACTION_WIDTH) : 0
 
             return (
               <div
                 key={action.id}
                 className={`clip-block ${isSelected ? 'clip-block--selected' : ''} ${isGroup ? 'clip-block--group' : ''}`}
-                style={{ left: x, top, bottom, width: MIN_ACTION_WIDTH + wp }}
+                style={{ left: x, top, bottom, width: MIN_ACTION_WIDTH + Math.max(wp, durationPx) }}
                 onDragOver={isGroup ? (e => { if (e.dataTransfer.types.includes('application/companion-action')) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy' } }) : undefined}
                 onDrop={isGroup ? (e => {
                   const raw = e.dataTransfer.getData('application/companion-action')
@@ -474,7 +492,7 @@ export default function Timeline({
                     <>
                       <span className="action-name">Action Group</span>
                       <span className="action-instance">{childCount} action{childCount !== 1 ? 's' : ''}</span>
-                      <span className="action-exec-mode">
+                      <span className="action-exec-mode" style={{ display: 'contents' }}>
                         <select
                           className="exec-mode-select"
                           value={execMode ?? 'concurrent'}
@@ -492,6 +510,7 @@ export default function Timeline({
                       <span className="action-name">{action.action || <em>new</em>}</span>
                       <span className="action-instance">{instLabel}</span>
                       {action.delay > 0 && <span className="action-delay">{msToLabel(action.delay)}</span>}
+                      {durationMs && <span className="action-duration-badge" title={`Timeout: ${durationMs}ms`}>⏱ {msToLabel(durationMs)}</span>}
                     </>
                   )}
                   {!hasWait && next && (
@@ -503,6 +522,10 @@ export default function Timeline({
                     >⏱+</button>
                   )}
                 </div>
+
+                {durationPx > 0 && !hasWait && (
+                  <div className="clip-duration-bar" style={{ width: durationPx }} title={`Timeout: ${msToLabel(durationMs!)} — action active for this duration`} />
+                )}
 
                 {hasWait && (
                   <div className="clip-wait" style={{ width: wp }} onMouseDown={e => e.stopPropagation()}>
@@ -589,7 +612,10 @@ export default function Timeline({
     }
     const ppm = pxPerMs(containerWidth)
     const absChildren = children.map(c => ({ ...c, delay: absStart + c.delay }))
-    const laneAssignments = assignLanes(absChildren, ms => ms * ppm, () => MIN_ACTION_WIDTH)
+    const laneAssignments = assignLanes(absChildren, ms => ms * ppm, (c) => {
+      const dur = getActionDurationMs(c)
+      return dur ? Math.max(MIN_ACTION_WIDTH, Math.round(dur * ppm)) : MIN_ACTION_WIDTH
+    })
     const laneMap = new Map(laneAssignments.map(({ id, lane }) => [id, lane]))
     const laneCount = Math.max(1, ...laneAssignments.map(l => l.lane + 1))
     const trackHeight = laneCount * LANE_HEIGHT
@@ -640,11 +666,13 @@ export default function Timeline({
             const bottom = (laneCount - lane - 1) * LANE_HEIGHT + LANE_PAD
             const instLabel = instances[child.instance]?.label ?? child.instance?.slice(0, 6) ?? '?'
             const isGroup = child.instance === 'internal' && child.action === 'action_group'
+            const childDurMs = !isGroup ? getActionDurationMs(child) : null
+            const childDurPx = childDurMs ? Math.max(0, Math.round(childDurMs * ppm) - MIN_ACTION_WIDTH) : 0
             return (
               <div
                 key={child.id}
                 className={`clip-block clip-block--child ${isGroup ? 'clip-block--group' : ''}`}
-                style={{ left: x, top, bottom, width: MIN_ACTION_WIDTH }}
+                style={{ left: x, top, bottom, width: MIN_ACTION_WIDTH + childDurPx }}
                 onMouseDown={e => {
                   e.preventDefault(); e.stopPropagation()
                   const startAbsMs = absStart + child.delay
@@ -689,9 +717,13 @@ export default function Timeline({
                       <span className="action-name">{child.action || <em>new</em>}</span>
                       <span className="action-instance">{instLabel}</span>
                       {child.delay > 0 && <span className="action-delay">+{msToLabel(child.delay)}</span>}
+                      {childDurMs && <span className="action-duration-badge" title={`Timeout: ${childDurMs}ms`}>⏱ {msToLabel(childDurMs)}</span>}
                     </>
                   )}
                 </div>
+                {childDurPx > 0 && (
+                  <div className="clip-duration-bar" style={{ width: childDurPx }} title={`Timeout: ${msToLabel(childDurMs!)}`} />
+                )}
               </div>
             )
           })}
@@ -765,7 +797,11 @@ export default function Timeline({
                     </select>
                   </>
                 ) : (
-                  <><span className="concurrent-item-name">{child.action || '(new)'}</span><span className="concurrent-item-inst">{instLabel}</span></>
+                  <>
+                    <span className="concurrent-item-name">{child.action || '(new)'}</span>
+                    <span className="concurrent-item-inst">{instLabel}</span>
+                    {(() => { const d = getActionDurationMs(child); return d ? <span className="action-duration-badge" title={`Timeout: ${d}ms`}>⏱ {msToLabel(d)}</span> : null })()}
+                  </>
                 )}
               </div>
             )
