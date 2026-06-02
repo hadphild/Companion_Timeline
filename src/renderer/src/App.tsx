@@ -751,13 +751,25 @@ export default function App() {
 
   const startPlayFrom = useCallback((startMs: number, selectedControl: ButtonControl | null, selectedButtonKey: string | null) => {
     if (!selectedControl) return
-    const allDelays = Object.values(selectedControl.steps).flatMap(s =>
-      Object.values(s.action_sets).flatMap(acts => (acts ?? []).map(a => a.delay))
-    )
-    // Tail = time for playhead to visually clear the last 100px action block
-    // pxPerMs ≈ (containerWidth≈800) / visibleMs  →  tail = 100 * visibleMs / 800
+    // Compute true end time: delay + timeout/duration for every action, recursing into groups
+    const actionEnd = (a: CompanionAction, parentDelay = 0): number => {
+      const absStart = parentDelay + a.delay
+      const dur = ['timeout', 'duration'].reduce((best, k) => {
+        const v = a.options?.[k]; const n = Number(v)
+        return (v != null && v !== '' && !isNaN(n) && n > 0) ? Math.max(best, n) : best
+      }, 0)
+      let end = absStart + dur
+      for (const kids of Object.values(a.children ?? {}))
+        for (const c of kids ?? []) end = Math.max(end, actionEnd(c, absStart))
+      return end
+    }
+    let maxEndMs = 0
+    for (const step of Object.values(selectedControl.steps))
+      for (const acts of Object.values(step.action_sets))
+        for (const a of acts ?? []) maxEndMs = Math.max(maxEndMs, actionEnd(a))
+    // Add tail so the playhead visually clears the last clip block
     const tail = Math.max(300, Math.round(timelineVisibleMsRef.current / 8))
-    const maxMs = Math.max(0, ...allDelays) + tail
+    const maxMs = maxEndMs + tail
     if (startMs >= maxMs) { setPlayheadMs(0); return }
 
     setIsPlaying(true)
